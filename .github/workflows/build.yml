@@ -102,3 +102,6 @@ jobs:
 
       - name: Run Tesla enrollment tests (keygen + present-key message)
         run: bash tools/test/run_tesla_enrollment_test.sh
+
+      - name: Run DBC engine unit tests (pack/unpack, mux, RMW, Tesla checksum)
+        run: bash tools/test/run_dbc_test.sh

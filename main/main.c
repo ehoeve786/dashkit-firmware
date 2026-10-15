@@ -165,6 +165,10 @@ void app_main(void)
 
     ESP_ERROR_CHECK(vehicle_control_init());
 
+    // A CAN failure must not take BLE/OTA down with it: OTA is the only way to
+    // ship a fix. Keep going, skip the CAN bridge, and report red.
+    bool can_ok = true;
+
     // CAN interface 0 (MCP2518FD)
     mcp251xfd_config_t can0_cfg = {
         .spi_host     = CAN0_SPI_HOST,
@@ -181,11 +185,11 @@ void app_main(void)
     };
     can_interface_t *can0 = mcp251xfd_create(&can0_cfg);
     if (!can0) {
-        ESP_LOGE(TAG, "Failed to create CAN0 interface");
-        led_set_color(LED_COLOR_RED);
-        return;
+        ESP_LOGE(TAG, "Failed to create CAN0 interface; running BLE/OTA only");
+        can_ok = false;
+    } else {
+        ESP_ERROR_CHECK(can_manager_add_interface(can0));
     }
-    ESP_ERROR_CHECK(can_manager_add_interface(can0));
 
     // CAN interface 1 (MCP2518FD, shares SPI2 bus with CAN0)
     mcp251xfd_config_t can1_cfg = {
@@ -203,18 +207,19 @@ void app_main(void)
     };
     can_interface_t *can1 = mcp251xfd_create(&can1_cfg);
     if (!can1) {
-        ESP_LOGE(TAG, "Failed to create CAN1 interface");
-        led_set_color(LED_COLOR_RED);
-        return;
+        ESP_LOGE(TAG, "Failed to create CAN1 interface; running BLE/OTA only");
+        can_ok = false;
+    } else {
+        ESP_ERROR_CHECK(can_manager_add_interface(can1));
     }
-    ESP_ERROR_CHECK(can_manager_add_interface(can1));
 
     // Start CAN
-    err = can_manager_start();
-    if (err != ESP_OK) {
-        ESP_LOGE(TAG, "CAN manager start failed");
-        led_set_color(LED_COLOR_RED);
-        return;
+    if (can_ok) {
+        err = can_manager_start();
+        if (err != ESP_OK) {
+            ESP_LOGE(TAG, "CAN manager start failed; running BLE/OTA only");
+            can_ok = false;
+        }
     }
 
     // BLE
@@ -235,10 +240,12 @@ void app_main(void)
     ESP_ERROR_CHECK(tesla_ble_client_init());
 #endif
 
-    // Bridge task: CAN -> BLE
-    xTaskCreatePinnedToCore(can_to_ble_task, "can2ble", 8192, NULL, 5, NULL, 0);
+    // Bridge task: CAN -> BLE (only once CAN is running; receive would spin otherwise)
+    if (can_ok) {
+        xTaskCreatePinnedToCore(can_to_ble_task, "can2ble", 8192, NULL, 5, NULL, 0);
+    }
 
-    ESP_LOGI(TAG, "DashKit firmware ready");
+    ESP_LOGI(TAG, "DashKit firmware ready (can=%s)", can_ok ? "ok" : "unavailable");
 
     // Commit this image once it has survived the boot window (OTA rollback).
     const esp_timer_create_args_t mv_args = {
@@ -249,5 +256,5 @@ void app_main(void)
     ESP_ERROR_CHECK(esp_timer_create(&mv_args, &mv_timer));
     ESP_ERROR_CHECK(esp_timer_start_once(mv_timer, MARK_VALID_DELAY_MS * 1000ULL));
 
-    led_set_color(LED_COLOR_GREEN);
+    led_set_color(can_ok ? LED_COLOR_GREEN : LED_COLOR_RED);
 }

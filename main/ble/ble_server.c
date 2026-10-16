@@ -228,6 +228,7 @@ static void conn_check_cb(void *arg)
 {
     (void)arg;
     uint32_t t = now_s();
+    ble_ota_poll();
     for (int i = 0; i < MAX_CONNS; i++) {
         conn_slot_t *s = &s_conns[i];
         if (s->handle == BLE_HS_CONN_HANDLE_NONE) {
@@ -237,12 +238,8 @@ static void conn_check_cb(void *arg)
         // DISCONNECT): free the slot or a full table keeps advertising off.
         if (ble_gap_conn_find(s->handle, NULL) != 0) {
             ESP_LOGW(TAG, "Reaped stale slot %d (handle=%d)", i, s->handle);
-            bool was_active = (s->handle == s_active_handle);
+            ble_ota_on_disconnect(s->handle);
             s->handle = BLE_HS_CONN_HANDLE_NONE;
-            if (was_active) {
-                // OTA is only ever driven by the active phone.
-                ble_ota_on_disconnect();
-            }
             update_active();
             if (ble_hs_synced()) {
                 start_advertising();
@@ -258,7 +255,7 @@ static void conn_check_cb(void *arg)
         // App pings can lose the one-GATT-op-at-a-time race against OTA chunk
         // writes; never cull the updating phone mid-transfer. Refreshing the
         // ping clock also grants a fresh window after an aborted OTA.
-        if (s->handle == s_active_handle && ble_ota_is_in_progress()) {
+        if (ble_ota_is_owner(s->handle)) {
             s->last_ping_s = t;
             continue;
         }
@@ -344,16 +341,12 @@ static int gap_event_handler(struct ble_gap_event *event, void *arg)
                  event->disconnect.conn.conn_handle, event->disconnect.reason);
         conn_slot_t *slot = slot_by_handle(event->disconnect.conn.conn_handle);
         if (slot) {
-            bool was_active = (slot->handle == s_active_handle);
+            ble_ota_on_disconnect(slot->handle);
             slot->handle = BLE_HS_CONN_HANDLE_NONE;
             slot->encrypted = false;
             slot->subscribed = false;
             slot->peer_was_bonded = false;
             slot->ping_seen = false;
-            if (was_active) {
-                // OTA is only ever driven by the active phone.
-                ble_ota_on_disconnect();
-            }
             update_active();
             if (conn_count() == 0) {
                 // Reset the CAN filter to pass-through for the next client.

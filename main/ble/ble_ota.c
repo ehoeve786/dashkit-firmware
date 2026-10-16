@@ -21,6 +21,10 @@ static const char *TAG = "ble_ota";
 // Progress notification interval
 #define OTA_PROGRESS_INTERVAL  4096
 
+// A transfer with no control/data write for this long is aborted, so a
+// vanished client cannot hold the update (and the CAN stream) indefinitely.
+#define OTA_IDLE_TIMEOUT_S  30
+
 // OTA BLE UUIDs (CADA01xx series)
 static const ble_uuid128_t s_ota_svc_uuid = BLE_UUID128_INIT(
     0xA1, 0x00, 0x01, 0xAA, 0x00, 0xC0, 0xD6, 0xB0,
@@ -49,6 +53,10 @@ static uint32_t s_fw_size = 0;
 static uint32_t s_received = 0;
 static bool s_ota_in_progress = false;
 static uint32_t s_last_progress_notify = 0;
+// Connection that began the transfer. Only it may write, abort, or receive
+// status; a transfer is never driven by a different bonded peer.
+static uint16_t s_ota_owner = BLE_HS_CONN_HANDLE_NONE;
+static uint32_t s_last_activity_s = 0;
 
 // BLE handles
 static uint16_t s_ota_status_val_handle;
@@ -56,9 +64,14 @@ static uint16_t s_ota_status_val_handle;
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
+static uint32_t now_s(void)
+{
+    return (uint32_t)(esp_timer_get_time() / 1000000);
+}
+
 static void send_status(uint8_t code, const uint8_t *payload, size_t payload_len)
 {
-    uint16_t conn = ble_server_get_conn_handle();
+    uint16_t conn = s_ota_owner;
     if (conn == BLE_HS_CONN_HANDLE_NONE) return;
 
     uint8_t buf[6];
@@ -101,6 +114,7 @@ static void ota_cleanup(void)
     s_received = 0;
     s_ota_in_progress = false;
     s_last_progress_notify = 0;
+    s_ota_owner = BLE_HS_CONN_HANDLE_NONE;
 }
 
 static void reboot_timer_cb(void *arg)
@@ -113,7 +127,7 @@ static void reboot_timer_cb(void *arg)
 // OTA command handling
 // ---------------------------------------------------------------------------
 // Returns true on success, false on failure (ATT error should be returned)
-static bool handle_begin(const uint8_t *data, uint16_t len)
+static bool handle_begin(uint16_t conn_handle, const uint8_t *data, uint16_t len)
 {
     if (len < 5) {
         ESP_LOGE(TAG, "Begin command too short");
@@ -122,7 +136,13 @@ static bool handle_begin(const uint8_t *data, uint16_t len)
     }
 
     if (s_ota_in_progress) {
-        ESP_LOGW(TAG, "OTA already in progress, aborting previous");
+        if (conn_handle != s_ota_owner) {
+            // Returned as an ATT error to the requester; status notifications go
+            // only to the owner.
+            ESP_LOGW(TAG, "OTA begin from non-owner handle %d rejected", conn_handle);
+            return false;
+        }
+        ESP_LOGW(TAG, "OTA restarted by owner, aborting previous");
         ota_cleanup();
     }
 
@@ -157,6 +177,8 @@ static bool handle_begin(const uint8_t *data, uint16_t len)
     s_received = 0;
     s_last_progress_notify = 0;
     s_ota_in_progress = true;
+    s_ota_owner = conn_handle;
+    s_last_activity_s = now_s();
 
     ESP_LOGI(TAG, "OTA started: %lu bytes, partition '%s'",
              (unsigned long)s_fw_size, s_update_partition->label);
@@ -164,9 +186,9 @@ static bool handle_begin(const uint8_t *data, uint16_t len)
     return true;
 }
 
-static void handle_abort(void)
+static void handle_abort(uint16_t conn_handle)
 {
-    if (!s_ota_in_progress) return;
+    if (!s_ota_in_progress || conn_handle != s_ota_owner) return;
 
     ESP_LOGW(TAG, "OTA aborted by client");
     ota_cleanup();
@@ -178,6 +200,7 @@ static void handle_data(const uint8_t *data, uint16_t len)
         send_error(0x10);
         return;
     }
+    s_last_activity_s = now_s();
 
     if (s_received + len > s_fw_size) {
         ESP_LOGE(TAG, "Received more data than expected");
@@ -247,7 +270,6 @@ static void handle_data(const uint8_t *data, uint16_t len)
 static int ota_ctrl_access(uint16_t conn_handle, uint16_t attr_handle,
                            struct ble_gatt_access_ctxt *ctxt, void *arg)
 {
-    (void)conn_handle;
     (void)attr_handle;
     (void)arg;
 
@@ -264,12 +286,12 @@ static int ota_ctrl_access(uint16_t conn_handle, uint16_t attr_handle,
 
     switch (buf[0]) {
     case OTA_CMD_BEGIN:
-        if (!handle_begin(buf, copy_len)) {
+        if (!handle_begin(conn_handle, buf, copy_len)) {
             return BLE_ATT_ERR_UNLIKELY;
         }
         break;
     case OTA_CMD_ABORT:
-        handle_abort();
+        handle_abort(conn_handle);
         break;
     default:
         ESP_LOGW(TAG, "Unknown OTA command: 0x%02x", buf[0]);
@@ -282,7 +304,6 @@ static int ota_ctrl_access(uint16_t conn_handle, uint16_t attr_handle,
 static int ota_data_access(uint16_t conn_handle, uint16_t attr_handle,
                            struct ble_gatt_access_ctxt *ctxt, void *arg)
 {
-    (void)conn_handle;
     (void)attr_handle;
     (void)arg;
 
@@ -292,6 +313,10 @@ static int ota_data_access(uint16_t conn_handle, uint16_t attr_handle,
 
     uint16_t len = OS_MBUF_PKTLEN(ctxt->om);
     if (len == 0) return 0;
+    if (!ble_ota_is_owner(conn_handle)) {
+        // Data is only accepted from the connection that began the transfer.
+        return s_ota_in_progress ? BLE_ATT_ERR_INSUFFICIENT_AUTHOR : BLE_ATT_ERR_REQ_NOT_SUPPORTED;
+    }
 
     // Read data from mbuf chain
     uint8_t *buf = malloc(len);
@@ -371,10 +396,10 @@ esp_err_t ble_ota_init(void)
     return ESP_OK;
 }
 
-void ble_ota_on_disconnect(void)
+void ble_ota_on_disconnect(uint16_t conn_handle)
 {
-    if (s_ota_in_progress) {
-        ESP_LOGW(TAG, "BLE disconnected during OTA, aborting");
+    if (ble_ota_is_owner(conn_handle)) {
+        ESP_LOGW(TAG, "owner disconnected during OTA, aborting");
         ota_cleanup();
     }
 }
@@ -382,4 +407,17 @@ void ble_ota_on_disconnect(void)
 bool ble_ota_is_in_progress(void)
 {
     return s_ota_in_progress;
+}
+
+bool ble_ota_is_owner(uint16_t conn_handle)
+{
+    return s_ota_in_progress && conn_handle == s_ota_owner;
+}
+
+void ble_ota_poll(void)
+{
+    if (s_ota_in_progress && now_s() - s_last_activity_s > OTA_IDLE_TIMEOUT_S) {
+        ESP_LOGW(TAG, "OTA idle for %d s, aborting", OTA_IDLE_TIMEOUT_S);
+        ota_cleanup();
+    }
 }

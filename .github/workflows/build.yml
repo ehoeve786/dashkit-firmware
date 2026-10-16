@@ -102,3 +102,6 @@ jobs:
 
       - name: Run Tesla enrollment tests (keygen + present-key message)
         run: bash tools/test/run_tesla_enrollment_test.sh
+
+      - name: Run CAN filter unit tests (atomic update contract)
+        run: bash tools/test/run_can_filter_test.sh

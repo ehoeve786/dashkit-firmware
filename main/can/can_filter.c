@@ -4,6 +4,8 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/semphr.h"
 
+#include <string.h>
+
 static const char *TAG = "can_filter";
 
 // Maximum number of (bus, addr) entries the filter can hold.
@@ -31,17 +33,14 @@ esp_err_t can_filter_set(const uint8_t *data, size_t len)
 {
     if (!s_lock) return ESP_ERR_INVALID_STATE;
 
-    // Parse directly into s_entries under the lock to avoid a large
-    // stack-allocated scratch buffer (the BLE host task that calls this
-    // has a relatively small stack). s_count is only advanced on success,
-    // so readers see either the previous or the new table.
-    xSemaphoreTake(s_lock, portMAX_DELAY);
-
+    // Parse into a scratch table first and commit only on success, so a
+    // malformed or oversized write leaves the previous filter fully intact.
+    // (The BLE host task is the only writer, so the scratch copy is safe.)
+    static can_filter_entry_t s_scratch[CAN_FILTER_MAX_ENTRIES];
     size_t new_count = 0;
     size_t offset = 0;
     while (offset < len) {
         if (offset + 2 > len) {
-            xSemaphoreGive(s_lock);
             ESP_LOGW(TAG, "Truncated header at offset %u", (unsigned)offset);
             return ESP_ERR_INVALID_ARG;
         }
@@ -49,14 +48,12 @@ esp_err_t can_filter_set(const uint8_t *data, size_t len)
         uint8_t num_addr = data[offset++];
 
         if (offset + (size_t)num_addr * 4 > len) {
-            xSemaphoreGive(s_lock);
             ESP_LOGW(TAG, "Truncated address list for bus %u", bus_id);
             return ESP_ERR_INVALID_ARG;
         }
 
         for (uint8_t i = 0; i < num_addr; i++) {
             if (new_count >= CAN_FILTER_MAX_ENTRIES) {
-                xSemaphoreGive(s_lock);
                 ESP_LOGW(TAG, "Filter table overflow (%d entries max)",
                          CAN_FILTER_MAX_ENTRIES);
                 return ESP_ERR_NO_MEM;
@@ -67,12 +64,14 @@ esp_err_t can_filter_set(const uint8_t *data, size_t len)
                             ((uint32_t)data[offset + 3] << 24);
             offset += 4;
 
-            s_entries[new_count].bus_id = bus_id;
-            s_entries[new_count].addr   = addr;
+            s_scratch[new_count].bus_id = bus_id;
+            s_scratch[new_count].addr   = addr;
             new_count++;
         }
     }
 
+    xSemaphoreTake(s_lock, portMAX_DELAY);
+    memcpy(s_entries, s_scratch, new_count * sizeof(s_scratch[0]));
     s_count = new_count;
     xSemaphoreGive(s_lock);
 
@@ -80,11 +79,9 @@ esp_err_t can_filter_set(const uint8_t *data, size_t len)
              (unsigned)len, (unsigned)new_count,
              new_count == 0 ? " (pass-through)" : "");
     for (size_t i = 0; i < new_count; i++) {
-        // Safe to read s_entries here without the lock: only this task
-        // (the BLE host task) ever writes to the table.
         ESP_LOGI(TAG, "  [%u] bus=%u addr=0x%03lX",
-                 (unsigned)i, s_entries[i].bus_id,
-                 (unsigned long)s_entries[i].addr);
+                 (unsigned)i, s_scratch[i].bus_id,
+                 (unsigned long)s_scratch[i].addr);
     }
     return ESP_OK;
 }

@@ -13,6 +13,8 @@ concurrency:
 jobs:
   build:
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
     steps:
       - uses: actions/checkout@v4
 
@@ -70,6 +72,26 @@ jobs:
           name: dashkit-firmware-${{ github.sha }}
           path: build/dashkit-firmware.bin
           retention-days: 14
+
+      # Artifacts download as a zip behind a GitHub sign-in; a release asset
+      # is a plain .bin a phone can fetch and flash via DashPilot's "Install
+      # firmware from file". Never touches the OTA manifest. One rolling
+      # pre-release per PR (test-pr-<n>) or for manual runs (test-build).
+      # Fork PRs get a read-only token, so they skip this.
+      - name: Publish test pre-release
+        if: github.event_name == 'workflow_dispatch' || (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository)
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: "${{ github.event_name == 'pull_request' && format('test-pr-{0}', github.event.pull_request.number) || 'test-build' }}"
+          target_commitish: "${{ github.event.pull_request.head.sha || github.sha }}"
+          name: "${{ github.event_name == 'pull_request' && format('Test build: PR #{0}', github.event.pull_request.number) || format('Test build: {0}', github.ref_name) }}"
+          body: |
+            Firmware test build of ${{ github.event.pull_request.head.sha || github.sha }} (${{ github.ref_name }}). Not an OTA release.
+            Flash it from DashPilot: Settings > Firmware > Install firmware from file.
+          prerelease: true
+          make_latest: false
+          files: build/dashkit-firmware.bin
+          fail_on_unmatched_files: true
 
   # Host-side Tesla crypto/session unit tests. No ESP-IDF needed:
   # the runner builds a pinned mbedTLS 3.6.2 into a local prefix.

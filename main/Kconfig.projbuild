@@ -27,4 +27,13 @@ menu "DashKit"
         help
             Passive scan for BTHome v2 advertisements (Shelly BLU buttons),
             mapping button events to vehicle controls. Work in progress.
+
+    config DASHKIT_CAN_ACCEPT_ALL
+        bool "Forward every CAN ID (discovery mode)"
+        default n
+        help
+            Bypass the generated per-bus hardware RX filters and accept every
+            frame on both buses. For discovering which IDs a car sends; the
+            BLE link cannot carry a full bus, so frames are dropped and the
+            dashboard will stutter while this is on.
 endmenu

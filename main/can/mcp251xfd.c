@@ -306,6 +306,16 @@ static esp_err_t configure_fifos(mcp251xfd_ctx_t *ctx)
     err = write_reg32(ctx, REG_C1FIFOCON(2), txfifo_con);
     if (err != ESP_OK) return err;
 
+#ifdef CONFIG_DASHKIT_CAN_ACCEPT_ALL
+    // Discovery mode: a single filter with an all-don't-care mask accepts
+    // every ID (MIDE=0 in the mask also admits extended frames).
+    write_reg32(ctx, REG_C1FLTOBJ(0), 0);
+    write_reg32(ctx, REG_C1MASK(0), 0);
+    err = write_reg32(ctx, REG_C1FLTCON(0), 0x81);  // FLTEN, FIFO 1
+    ESP_LOGW(TAG, "Bus %u: HW RX filter bypassed (accept all)", (unsigned)ctx->bus_id);
+    return err;
+#endif
+
     // ---- Hardware acceptance filtering ----
     const dbc_hw_filter_set_t *fs =
         (ctx->bus_id < DBC_HW_FILTER_BUS_COUNT) ? &g_dbc_hw_filters[ctx->bus_id]

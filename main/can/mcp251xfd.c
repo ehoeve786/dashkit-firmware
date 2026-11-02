@@ -763,6 +763,11 @@ static esp_err_t iface_send(can_interface_t *self, const can_frame_t *frame)
     return ESP_OK;
 }
 
+static esp_err_t iface_get_errors(can_interface_t *self, uint32_t *trec)
+{
+    return read_reg32((mcp251xfd_ctx_t *)self->ctx, REG_C1TREC, trec);
+}
+
 static void iface_set_rx_callback(can_interface_t *self, can_rx_callback_t cb, void *user_ctx)
 {
     mcp251xfd_ctx_t *ctx = (mcp251xfd_ctx_t *)self->ctx;
@@ -834,6 +839,7 @@ can_interface_t *mcp251xfd_create(const mcp251xfd_config_t *config)
     iface->start = iface_start;
     iface->stop = iface_stop;
     iface->send = iface_send;
+    iface->get_errors = iface_get_errors;
     iface->set_rx_callback = iface_set_rx_callback;
     iface->bus_id = config->bus_id;
     iface->ctx = ctx;

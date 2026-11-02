@@ -2,6 +2,7 @@
 #include "dbc.h"
 #include "automation_manager.h"
 #include "ble_server.h"
+#include "can_manager.h"
 
 #include "esp_log.h"
 #include "esp_system.h"
@@ -42,6 +43,10 @@ static const char *TAG = "veh_ctrl";
 #define UNLATCH_REPEATS     40
 #define UNLATCH_ATTEMPTS    2
 #define UNLATCH_GAP_MS      300
+// Diagnostic frame injected into the app's CAN stream (not sent on the bus):
+// [TEC, REC, flags>>16, door, phase(0=before,1..=after attempt N)]. 0x7FD is
+// never used by the car. flags: bit0 EWARN,1 RXWARN,2 TXWARN,3 RXBP,4 TXBP,5 TXBO.
+#define UNLATCH_DIAG_ID     0x7FD
 #define CLOSURE_OPEN        3
 #define REASON_RKE          1
 
@@ -180,6 +185,18 @@ static int gear(void)
     return can_get(GEAR_BUS, "DI_systemStatus", "DI_gear", &g, false) == ESP_OK ? (int)g : -1;
 }
 
+// Report the vehicle-bus error state to the app as a synthetic CAN frame.
+static void unlatch_diag(uint8_t door, uint8_t phase)
+{
+    uint32_t trec = 0;
+    can_manager_get_errors(VC_BUS, &trec);
+    can_tagged_frame_t d = { .bus_id = VC_BUS, .frame = { .id = UNLATCH_DIAG_ID, .dlc = 5,
+        .data = { (trec >> 8) & 0xFF, trec & 0xFF, (trec >> 16) & 0xFF, door, phase } } };
+    ESP_LOGI(TAG, "unlatch diag: door=%u phase=%u TEC=%u REC=%u flags=0x%02x",
+             door, phase, d.frame.data[0], d.frame.data[1], d.frame.data[2]);
+    can_manager_inject(&d);
+}
+
 // Pop one door latch. Builds the frame from the live VCSEC_requests bytes (or
 // from scratch on a quiet bus), sets that door's ClosureRequest + RequestReason
 // and repeats at the car's own cadence; the car's zero frames act as release.
@@ -205,6 +222,7 @@ static void door_unlatch(uint16_t door)
     dbc_pack(f.data, sc, CLOSURE_OPEN);
     dbc_pack(f.data, sr, REASON_RKE);
     ESP_LOGI(TAG, "door unlatch %u", door);
+    unlatch_diag(door, 0);
     for (int a = 0; a < UNLATCH_ATTEMPTS; a++) {
         if (a) vTaskDelay(pdMS_TO_TICKS(UNLATCH_GAP_MS));
         for (int i = 0; i < UNLATCH_REPEATS; i++) {
@@ -212,6 +230,8 @@ static void door_unlatch(uint16_t door)
             can_frame_send(VC_BUS, "VCSEC_requests", &f);
             vTaskDelay(pdMS_TO_TICKS(UNLATCH_PERIOD_MS));
         }
+    }
+        unlatch_diag(door, a + 1);
     }
 }
 

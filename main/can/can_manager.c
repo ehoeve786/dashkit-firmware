@@ -110,6 +110,17 @@ esp_err_t can_manager_send(uint8_t bus_id, const can_frame_t *frame)
     return ESP_ERR_NOT_FOUND;
 }
 
+esp_err_t can_manager_get_errors(uint8_t bus_id, uint32_t *trec)
+{
+    for (int i = 0; i < s_iface_count; i++) {
+        if (s_interfaces[i]->bus_id == bus_id) {
+            return s_interfaces[i]->get_errors ? s_interfaces[i]->get_errors(s_interfaces[i], trec)
+                                               : ESP_ERR_NOT_SUPPORTED;
+        }
+    }
+    return ESP_ERR_NOT_FOUND;
+}
+
 esp_err_t can_manager_inject(const can_tagged_frame_t *frame)
 {
     if (!s_rx_queue) return ESP_ERR_INVALID_STATE;

@@ -32,6 +32,9 @@ typedef struct can_interface {
     esp_err_t (*stop)(struct can_interface *self);
     esp_err_t (*send)(struct can_interface *self, const can_frame_t *frame);
     void (*set_rx_callback)(struct can_interface *self, can_rx_callback_t cb, void *user_ctx);
+    // Optional: raw error state (MCP251xFD C1TREC layout: REC[7:0], TEC[15:8],
+    // EWARN=16, RXWARN=17, TXWARN=18, RXBP=19, TXBP=20, TXBO=21).
+    esp_err_t (*get_errors)(struct can_interface *self, uint32_t *trec);
 
     uint8_t bus_id;        // Bus index (1-based, matching DashPilot convention)
     void   *ctx;           // Driver-specific context

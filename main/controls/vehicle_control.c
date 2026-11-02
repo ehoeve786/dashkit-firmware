@@ -34,10 +34,10 @@ static const char *TAG = "veh_ctrl";
 // Door unlatch: VCSEC held OPEN for 8 consecutive frames (~800 ms) in captures,
 // but it keeps sending its own all-zero 0x1F9 at 100 ms while we inject, so
 // the body controller would see OPEN/NONE alternating at a 100 ms cadence and
-// latch only by luck. Send 5x faster so ours dominate (same trick as the
+// latch only by luck. Send 20x faster so ours dominate (same rate as the
 // mirror-dip injector). Reason RKE = remote keyless entry (app / phone key).
-#define UNLATCH_PERIOD_MS   20
-#define UNLATCH_REPEATS     40
+#define UNLATCH_PERIOD_MS   5
+#define UNLATCH_REPEATS     160
 #define CLOSURE_OPEN        3
 #define REASON_RKE          1
 

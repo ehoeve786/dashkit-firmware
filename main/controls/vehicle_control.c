@@ -29,22 +29,18 @@ static const char *TAG = "veh_ctrl";
 #define MIRROR_DIP_INJECT_MS 5   // car's 0x273 is ~500ms; 200Hz keeps its frames from landing
 
 #define GEAR_BUS      0
-#define GEAR_PARK     1
 #define GEAR_REVERSE  2
+#define GEAR_NEUTRAL  3
+#define GEAR_DRIVE    4
 
 // Door unlatch: VCSEC held OPEN for 8 consecutive frames (~800 ms) in captures,
-// but it keeps sending its own all-zero 0x1F9 at 100 ms while we inject.
-// Measured on the car: 100 ms injection latched at random, 20 ms most of the
-// time, 5 ms and "send right after the car's frame" never. So: 20 ms, and run
-// the hold twice with a gap so a missed attempt gets a second, independent
-// one (a repeat on an already-open latch is harmless).
-// Reason RKE = remote keyless entry (app / phone key).
+// but it keeps sending its own all-zero 0x1F9 at 100 ms while we inject, so
+// send 5x faster so ours dominate (20 ms worked reliably on the car; 5 ms and
+// a phase-locked variant did not). Reason RKE = remote keyless entry (app).
 #define UNLATCH_PERIOD_MS   20
 #define UNLATCH_REPEATS     40
-#define UNLATCH_ATTEMPTS    2
-#define UNLATCH_GAP_MS      300
 // Diagnostic frame injected into the app's CAN stream (not sent on the bus):
-// [TEC, REC, flags>>16, door, phase(0=before,1..=after attempt N)]. 0x7FD is
+// [TEC, REC, flags>>16, door, phase(0=before,1=after)]. 0x7FD is
 // never used by the car. flags: bit0 EWARN,1 RXWARN,2 TXWARN,3 RXBP,4 TXBP,5 TXBO.
 #define UNLATCH_DIAG_ID     0x7FD
 #define CLOSURE_OPEN        3
@@ -209,8 +205,12 @@ static void door_unlatch(uint16_t door)
         "VCSEC_frontLeftRequestReason", "VCSEC_frontRightRequestReason",
         "VCSEC_rearLeftRequestReason",  "VCSEC_rearRightRequestReason" };
     if (door > 3) return;
-    if (gear() != GEAR_PARK) {
-        ESP_LOGW(TAG, "door unlatch %u ignored: not in Park", door);
+    // Only refuse while actually in gear. Once a parked car's drive system goes
+    // to standby (PRND disappears from the screen) DI_gear no longer reads P,
+    // so a "must be P" gate would block exactly the case this is for.
+    int g = gear();
+    if (g == GEAR_REVERSE || g == GEAR_NEUTRAL || g == GEAR_DRIVE) {
+        ESP_LOGW(TAG, "door unlatch %u ignored: in gear (%d)", door, g);
         return;
     }
     dbc_msg_t m = dbc_msg("VCSEC_requests");
@@ -223,15 +223,12 @@ static void door_unlatch(uint16_t door)
     dbc_pack(f.data, sr, REASON_RKE);
     ESP_LOGI(TAG, "door unlatch %u", door);
     unlatch_diag(door, 0);
-    for (int a = 0; a < UNLATCH_ATTEMPTS; a++) {
-        if (a) vTaskDelay(pdMS_TO_TICKS(UNLATCH_GAP_MS));
-        for (int i = 0; i < UNLATCH_REPEATS; i++) {
-            // A full TX FIFO (busy bus) just costs one frame; keep the hold going.
-            can_frame_send(VC_BUS, "VCSEC_requests", &f);
-            vTaskDelay(pdMS_TO_TICKS(UNLATCH_PERIOD_MS));
-        }
-        unlatch_diag(door, a + 1);
+    for (int i = 0; i < UNLATCH_REPEATS; i++) {
+        // A full TX FIFO (busy bus) just costs one frame; keep the hold going.
+        can_frame_send(VC_BUS, "VCSEC_requests", &f);
+        vTaskDelay(pdMS_TO_TICKS(UNLATCH_PERIOD_MS));
     }
+    unlatch_diag(door, 1);
 }
 
 static bool in_reverse(void)

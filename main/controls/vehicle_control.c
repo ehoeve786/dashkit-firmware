@@ -245,7 +245,6 @@ void vehicle_control_on_frame(const can_tagged_frame_t *frame)
     if (s_unlatch_id && frame->bus_id == VC_BUS && frame->frame.id == s_unlatch_id) {
         xSemaphoreGive(s_unlatch_sem);
     }
-    unlatch_diag(door, 1);
 }
 
 static bool in_reverse(void)

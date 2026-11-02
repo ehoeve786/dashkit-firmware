@@ -32,6 +32,7 @@ static const char *TAG = "multi_finger";
 // Action bound to each finger count, indexed by (fingers - MULTI_FINGER_MIN_FINGERS).
 static volatile uint8_t s_actions[ACTION_SLOTS] = { MULTI_FINGER_ACTION_NONE };
 static volatile bool     s_mirrors_folded = false;
+static volatile bool     s_low_power = false;
 static volatile bool     s_charge_port_open = false;
 // Peak touch-point count seen during the current gesture; the action is fired on
 // release based on this peak so 3/4/5-finger taps can be told apart (fingers land
@@ -143,6 +144,11 @@ static void fire_action(uint8_t fingers, uint8_t action)
     case MULTI_FINGER_ACTION_AC_SWING:
         ESP_LOGI(TAG, "%u-finger tap -> AC swing toggle", fingers);
         vehicle_control_submit(VC_CMD_AC_SWING_TOGGLE, 0);
+        break;
+    case MULTI_FINGER_ACTION_LOW_POWER:
+        s_low_power = !s_low_power;
+        ESP_LOGI(TAG, "%u-finger tap -> low power %s", fingers, s_low_power ? "on" : "off");
+        vehicle_control_submit(VC_CMD_LOW_POWER, s_low_power);
         break;
     default:
         break;

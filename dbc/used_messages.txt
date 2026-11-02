@@ -51,3 +51,4 @@ BMS_bmbMinMax             1 filter  # app: pack temps
 DI_odometerStatus         1 filter  # app: odometer
 VIN_info                  1 filter  # app: VIN assembly (muxed VIN_A/B/C405 by VIN_infoIndex)
 VCSEC_TPMSData           1 filter  # app: tyre pressure + temp per wheel (mux 0-3 per sensor, mux 5 all four)
+DAS_object                0 filter  # probe: lead/left/right vehicle objects (rate + layout check)

@@ -9142,6 +9142,94 @@ BO_ 505 VCSEC_requests: 1 VEH
  SG_ VCSEC_chargePortRequest: 0|2@1+ (1,0) [0|0] "" X
  SG_ VCSEC_driveAttemptedWithoutAuth: 2|1@1+ (1,0) [0|0] "" X
 
+
+BO_ 290 VCLEFT_doorStatus2: 8 X
+ SG_ VCLEFT_doorStatus2Index M : 0|1@1+ (1,0) [0|0] "" X
+ SG_ VCLEFT_frontLatchRelDuty m1 : 8|8@1+ (1,0) [0|0] "" X
+ SG_ VCLEFT_rearLatchRelDuty m0 : 8|8@1+ (1,0) [0|0] "" X
+ SG_ VCLEFT_BPillarCameraHeaterState m1 : 16|3@1+ (1,0) [0|0] "" X
+ SG_ VCLEFT_vehicleInMotion m0 : 16|1@1+ (1,0) [0|0] "" X
+ SG_ VCLEFT_frontDoorState m0 : 17|3@1+ (1,0) [0|0] "" X
+ SG_ VCLEFT_rearDoorState m0 : 20|3@1+ (1,0) [0|0] "" X
+ SG_ VCLEFT_frontHandleRawStatus m0 : 24|3@1+ (1,0) [0|0] "" X
+ SG_ VCLEFT_rearHandleRawStatus m0 : 27|3@1+ (1,0) [0|0] "" X
+ SG_ VCLEFT_mirrorFoldType m0 : 30|2@1+ (1,0) [0|0] "" X
+ SG_ VCLEFT_frontHandleDebounceStatus m0 : 32|3@1+ (1,0) [0|0] "" X
+ SG_ VCLEFT_rearHandleDebounceStatus m0 : 35|3@1+ (1,0) [0|0] "" X
+ SG_ VCLEFT_frontHandle5vEnable m0 : 38|1@1+ (1,0) [0|0] "" X
+ SG_ VCLEFT_rearHandle5vEnable m0 : 39|1@1+ (1,0) [0|0] "" X
+ SG_ VCLEFT_BPillarCameraHeaterCurrent m1 : 40|6@1+ (0.02,0) [0|0] "" X
+ SG_ VCLEFT_mirrorFoldCurrent m0 : 40|7@1- (0.05,0) [0|0] "" X
+ SG_ VCLEFT_mirrorDimmed m0 : 47|1@1+ (1,0) [0|0] "" X
+ SG_ VCLEFT_frontHandlePWM m0 : 48|7@1+ (1,0) [0|0] "" X
+ SG_ VCLEFT_mirrorTiltXOffset m1 : 48|8@1- (0.02,0) [0|0] "" X
+ SG_ VCLEFT_mirrorTiltYOffset m1 : 56|8@1- (0.02,0) [0|0] "" X
+ SG_ VCLEFT_rearHandlePWM m0 : 56|7@1+ (1,0) [0|0] "" X
+
+BO_ 660 UI_vehicleControl3: 8 X
+ SG_ UI_lightFlashRequest : 0|2@1+ (1,0) [0|0] "" X
+ SG_ UI_keylessDrivingEnabled : 2|1@1+ (1,0) [0|0] "" X
+ SG_ UI_phoneCallActive : 3|1@1+ (1,0) [0|0] "" X
+ SG_ UI_drivingSideVEH : 4|2@1+ (1,0) [0|0] "" X
+ SG_ UI_keyPairResponse : 6|2@1+ (1,0) [0|0] "" X
+ SG_ UI_lightShowClosuresEnabled : 8|1@1+ (1,0) [0|0] "" X
+ SG_ UI_steeringWheelHeatAutoReq : 9|1@1+ (1,0) [0|0] "" X
+ SG_ UI_steeringWheelHeatLevelReq : 10|2@1+ (1,0) [0|0] "" X
+ SG_ UI_headlightPulseRequest : 12|1@1+ (1,0) [0|0] "" X
+ SG_ UI_VCSECFeature2 : 13|1@1+ (1,0) [0|0] "" X
+ SG_ UI_VCSECFeature3 : 14|1@1+ (1,0) [0|0] "" X
+ SG_ UI_VCSECFeature4 : 15|1@1+ (1,0) [0|0] "" X
+ SG_ UI_VCSECFeature5 : 16|1@1+ (1,0) [0|0] "" X
+ SG_ UI_shortHornRequest : 17|1@1+ (1,0) [0|0] "" X
+ SG_ UI_packTempLoggingRequest : 18|1@1+ (1,0) [0|0] "" X
+ SG_ UI_UMC3UpdateInhibit : 22|1@1+ (1,0) [0|0] "" X
+ SG_ UI_displayRedShiftActive : 24|1@1+ (1,0) [0|0] "" X
+ SG_ UI_blindSpotIndicatorLightRequest : 35|1@1+ (1,0) [0|0] "" X
+ SG_ UI_keepOnAccessoryPortsReq : 38|1@1+ (1,0) [0|0] "" X
+ SG_ UI_windowPercentageRequest : 42|6@1- (5,0) [0|0] "" X
+ SG_ UI_windowRequestedFL : 48|1@1+ (1,0) [0|0] "" X
+ SG_ UI_windowRequestedFR : 49|1@1+ (1,0) [0|0] "" X
+ SG_ UI_windowRequestedRL : 50|1@1+ (1,0) [0|0] "" X
+ SG_ UI_windowRequestedRR : 51|1@1+ (1,0) [0|0] "" X
+ SG_ UI_windowRequest : 52|3@1+ (1,0) [0|0] "" X
+ SG_ UI_closeTrunkRequest : 55|1@1+ (1,0) [0|0] "" X
+ SG_ UI_derivedLoadshedFeature : 59|1@1+ (1,0) [0|0] "" X
+ SG_ UI_selfParkStandingBy : 62|1@1+ (1,0) [0|0] "" X
+
+BO_ 919 DI_cruise: 8 X
+ SG_ DI_cruiseRegulationState : 0|4@1+ (1,0) [0|0] "" X
+ SG_ DI_locUi : 4|9@1- (19.607843137254903,0) [0|0] "" X
+ SG_ DI_locUp : 13|10@1- (19.569471624266146,0) [0|0] "" X
+ SG_ DI_locTargetSpeed : 23|10@1- (0.25,20) [0|0] "" X
+ SG_ DI_locTargetAccel : 33|8@1- (0.1094488188976378,-1.5322834645669292) [0|0] "" X
+ SG_ DI_locFeedFwTrq : 41|10@1- (19.569471624266146,0) [0|0] "" X
+ SG_ DI_locTargetResetActive : 51|1@1+ (1,0) [0|0] "" X
+ SG_ DI_opdUp : 52|6@1- (40,0) [0|0] "" X
+ SG_ DI_opdUi : 58|6@1- (40,0) [0|0] "" X
+
+BO_ 321 RCM_inertial4: 8 X
+ SG_ RCM_longitudinalAccelRaw : 0|16@1- (0.00125,0) [0|0] "" X
+ SG_ RCM_lateralAccelRaw : 16|16@1- (0.00125,0) [0|0] "" X
+ SG_ RCM_verticalAccelRaw : 32|16@1- (0.00125,0) [0|0] "" X
+ SG_ RCM_longitudinalAccelRawQF : 48|1@1+ (1,0) [0|0] "" X
+ SG_ RCM_lateralAccelRawQF : 49|1@1+ (1,0) [0|0] "" X
+ SG_ RCM_verticalAccelRawQF : 50|1@1+ (1,0) [0|0] "" X
+ SG_ RCM_inertial4Counter : 52|4@1+ (1,0) [0|0] "" X
+ SG_ RCM_inertial4Checksum : 56|8@1+ (1,0) [0|0] "" X
+
+BO_ 760 ID2F8UI_gpsVehicleSpeed: 8 X
+ SG_ UI_gpsHDOP : 0|8@1+ (0.1,0) [0|0] "" X
+ SG_ UI_gpsVehicleHeading : 8|16@1+ (0.0078125,0) [0|0] "" X
+ SG_ UI_gpsVehicleSpeed : 24|16@1+ (0.00390625,0) [0|0] "" X
+ SG_ UI_userSpeedOffset : 40|6@1+ (1,-30) [0|0] "" X
+ SG_ UI_mapSpeedLimitUnits : 46|1@1+ (1,0) [0|0] "" X
+ SG_ UI_userSpeedOffsetUnits : 47|1@1+ (1,0) [0|0] "" X
+ SG_ UI_mppSpeedLimit : 48|5@1+ (5,0) [0|0] "" X
+ SG_ UI_gpsNmeaMIA : 53|1@1+ (1,0) [0|0] "" X
+ SG_ UI_gpsAntennaDisconnected : 54|1@1+ (1,0) [0|0] "" X
+ SG_ UI_conditionalLimitActive : 55|1@1+ (1,0) [0|0] "" X
+ SG_ UI_conditionalSpeedLimit : 56|5@1+ (5,0) [0|0] "" X
+
 CM_ BO_ 839 "UI_tripPlanning: was 0x082 (130) before the 2026 Tesla firmware update; moved to 0x347 (839), same layout, 1 Hz. Decoded from a comma rlog on 2026-09-06 while battery preheat was active.";
 CM_ "Generated by Tesla Firmware Decode @ version 923e442d6230241a259eeb3f415525373d40325c";
 

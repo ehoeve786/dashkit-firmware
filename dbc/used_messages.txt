@@ -51,3 +51,19 @@ BMS_bmbMinMax             1 filter  # app: pack temps
 DI_odometerStatus         1 filter  # app: odometer
 VIN_info                  1 filter  # app: VIN assembly (muxed VIN_A/B/C405 by VIN_infoIndex)
 VCSEC_TPMSData           1 filter  # app: tyre pressure + temp per wheel (mux 0-3 per sensor, mux 5 all four)
+
+# ---- closure-probe: capture door unlatch + validated extras (temporary) ----
+VCSEC_requests            1 filter  # closure/charge-port requests from VCSEC (unlatch capture)
+GTW_busLoadInfo           1 filter  # 0x119 = VCSEC_requests2 on this car
+VCLEFT_doorStatus         1 filter  # per-door latch state (left)
+VCRIGHT_doorStatus        1 filter  # per-door latch + trunk state (right)
+VCLEFT_doorStatus2        1 filter  # 0x122
+VCLEFT_liftgateStatus     1 filter  # trunk position
+UI_vehicleControl3        1 filter  # 0x294 window requests
+DI_cruise                 1 filter  # 0x397 cruise regulation state
+BMS_status                1 filter  # 0x212 uiChargeStatus
+BMS_socStatus             1 filter  # 0x292 socUI
+CP_evseStatus             1 filter  # 0x21D proximity / pilot
+RCM_inertial4             0 filter  # 0x141 accelerations
+ID2F8UI_gpsVehicleSpeed   0 filter  # 0x2F8 GPS speed/heading (DualCAN layout)
+DAS_control               0 filter  # 0x2B9 ACC state

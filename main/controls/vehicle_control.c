@@ -202,7 +202,8 @@ static void door_unlatch(uint16_t door)
     dbc_pack(f.data, sr, REASON_RKE);
     ESP_LOGI(TAG, "door unlatch %u", door);
     for (int i = 0; i < UNLATCH_REPEATS; i++) {
-        if (can_frame_send(VC_BUS, "VCSEC_requests", &f) != ESP_OK) return;
+        // A full TX FIFO (busy bus) just costs one frame; keep the hold going.
+        can_frame_send(VC_BUS, "VCSEC_requests", &f);
         vTaskDelay(pdMS_TO_TICKS(UNLATCH_PERIOD_MS));
     }
 }

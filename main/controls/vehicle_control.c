@@ -32,12 +32,16 @@ static const char *TAG = "veh_ctrl";
 #define GEAR_REVERSE  2
 
 // Door unlatch: VCSEC held OPEN for 8 consecutive frames (~800 ms) in captures,
-// but it keeps sending its own all-zero 0x1F9 at 100 ms while we inject, so
-// the body controller would see OPEN/NONE alternating at a 100 ms cadence and
-// latch only by luck. Send 20x faster so ours dominate (same rate as the
-// mirror-dip injector). Reason RKE = remote keyless entry (app / phone key).
-#define UNLATCH_PERIOD_MS   5
-#define UNLATCH_REPEATS     160
+// but it keeps sending its own all-zero 0x1F9 at 100 ms while we inject.
+// Measured on the car: 100 ms injection latched at random, 20 ms most of the
+// time, 5 ms and "send right after the car's frame" never. So: 20 ms, and run
+// the hold twice with a gap so a missed attempt gets a second, independent
+// one (a repeat on an already-open latch is harmless).
+// Reason RKE = remote keyless entry (app / phone key).
+#define UNLATCH_PERIOD_MS   20
+#define UNLATCH_REPEATS     40
+#define UNLATCH_ATTEMPTS    2
+#define UNLATCH_GAP_MS      300
 #define CLOSURE_OPEN        3
 #define REASON_RKE          1
 
@@ -201,10 +205,13 @@ static void door_unlatch(uint16_t door)
     dbc_pack(f.data, sc, CLOSURE_OPEN);
     dbc_pack(f.data, sr, REASON_RKE);
     ESP_LOGI(TAG, "door unlatch %u", door);
-    for (int i = 0; i < UNLATCH_REPEATS; i++) {
-        // A full TX FIFO (busy bus) just costs one frame; keep the hold going.
-        can_frame_send(VC_BUS, "VCSEC_requests", &f);
-        vTaskDelay(pdMS_TO_TICKS(UNLATCH_PERIOD_MS));
+    for (int a = 0; a < UNLATCH_ATTEMPTS; a++) {
+        if (a) vTaskDelay(pdMS_TO_TICKS(UNLATCH_GAP_MS));
+        for (int i = 0; i < UNLATCH_REPEATS; i++) {
+            // A full TX FIFO (busy bus) just costs one frame; keep the hold going.
+            can_frame_send(VC_BUS, "VCSEC_requests", &f);
+            vTaskDelay(pdMS_TO_TICKS(UNLATCH_PERIOD_MS));
+        }
     }
 }
 

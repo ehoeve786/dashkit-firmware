@@ -85,6 +85,13 @@ typedef enum {
     VC_CMD_AC_SWING_INTENSITY = 0x4D,
     // Config only, not persisted. value is ignored.
     VC_CMD_AC_SWING_TOGGLE = 0x4E,
+
+    // --- Door unlatch (VCSEC_requests 0x1F9) ---
+    // Pops one door latch like the Tesla app's "Unlatch Door": the per-door
+    // ClosureRequest = OPEN with reason RKE, held ~750 ms on the car's live
+    // frame (what VCSEC itself sends). Only acts in Park.
+    // value: 0=front left (driver), 1=front right, 2=rear left, 3=rear right.
+    VC_CMD_DOOR_UNLATCH = 0x50,  // (0x4F reserved by the Low Power draft, PR #6)
 } vehicle_control_opcode_t;
 
 // Create the command queue and worker task. Call once at startup.

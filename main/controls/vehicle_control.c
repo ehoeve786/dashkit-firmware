@@ -28,7 +28,15 @@ static const char *TAG = "veh_ctrl";
 #define MIRROR_DIP_INJECT_MS 5   // car's 0x273 is ~500ms; 200Hz keeps its frames from landing
 
 #define GEAR_BUS      0
+#define GEAR_PARK     1
 #define GEAR_REVERSE  2
+
+// Door unlatch: VCSEC's own 0x1F9 cadence is 100 ms; it held OPEN for 8 frames
+// in captures. Reason RKE = remote keyless entry (app / phone key).
+#define UNLATCH_PERIOD_MS   100
+#define UNLATCH_REPEATS     8
+#define CLOSURE_OPEN        3
+#define REASON_RKE          1
 
 typedef struct {
     uint8_t     opcode;
@@ -159,11 +167,46 @@ static void rear_fan_toggle(void)
     s_rear_fan.target = target;
 }
 
+static int gear(void)
+{
+    double g;
+    return can_get(GEAR_BUS, "DI_systemStatus", "DI_gear", &g, false) == ESP_OK ? (int)g : -1;
+}
+
+// Pop one door latch. Builds the frame from the live VCSEC_requests bytes (or
+// from scratch on a quiet bus), sets that door's ClosureRequest + RequestReason
+// and repeats at the car's own cadence; the car's zero frames act as release.
+static void door_unlatch(uint16_t door)
+{
+    static const char *const kClosure[4] = {
+        "VCSEC_frontLeftClosureRequest", "VCSEC_frontRightClosureRequest",
+        "VCSEC_rearLeftClosureRequest",  "VCSEC_rearRightClosureRequest" };
+    static const char *const kReason[4] = {
+        "VCSEC_frontLeftRequestReason", "VCSEC_frontRightRequestReason",
+        "VCSEC_rearLeftRequestReason",  "VCSEC_rearRightRequestReason" };
+    if (door > 3) return;
+    if (gear() != GEAR_PARK) {
+        ESP_LOGW(TAG, "door unlatch %u ignored: not in Park", door);
+        return;
+    }
+    dbc_msg_t m = dbc_msg("VCSEC_requests");
+    dbc_sig_t sc = dbc_sig(m, kClosure[door]), sr = dbc_sig(m, kReason[door]);
+    if (sc < 0 || sr < 0) return;
+    can_frame_t f;
+    if (can_frame_live(VC_BUS, "VCSEC_requests", &f) != ESP_OK &&
+        can_frame_init("VCSEC_requests", &f) != ESP_OK) return;
+    dbc_pack(f.data, sc, CLOSURE_OPEN);
+    dbc_pack(f.data, sr, REASON_RKE);
+    ESP_LOGI(TAG, "door unlatch %u", door);
+    for (int i = 0; i < UNLATCH_REPEATS; i++) {
+        if (can_frame_send(VC_BUS, "VCSEC_requests", &f) != ESP_OK) return;
+        vTaskDelay(pdMS_TO_TICKS(UNLATCH_PERIOD_MS));
+    }
+}
+
 static bool in_reverse(void)
 {
-    double gear;
-    return can_get(GEAR_BUS, "DI_systemStatus", "DI_gear", &gear, false) == ESP_OK
-           && (int)gear == GEAR_REVERSE;
+    return gear() == GEAR_REVERSE;
 }
 
 // Flip the bit relative to what is currently in effect (our injected value if
@@ -258,6 +301,10 @@ static void vehicle_control_task(void *arg)
             mirror_dip_toggle();
             continue;
         }
+        if (req.opcode == VC_CMD_DOOR_UNLATCH) {
+            door_unlatch(req.value);
+            continue;
+        }
         if (req.opcode == VC_CMD_REBOOT) {
             ESP_LOGW(TAG, "reboot requested, restarting");
             vTaskDelay(pdMS_TO_TICKS(200));  // let the BLE write ack flush
@@ -301,6 +348,7 @@ esp_err_t vehicle_control_submit(uint8_t opcode, uint16_t value)
         opcode != VC_CMD_REAR_FAN_TOGGLE &&
         opcode != VC_CMD_MIRROR_DIP_TOGGLE &&
         opcode != VC_CMD_REBOOT &&
+        opcode != VC_CMD_DOOR_UNLATCH &&
         !is_config_opcode(opcode) &&
         !find_command(opcode)) {
         ESP_LOGW(TAG, "reject unknown opcode 0x%02X", opcode);

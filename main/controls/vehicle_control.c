@@ -8,6 +8,7 @@
 #include "esp_system.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/queue.h"
+#include "freertos/semphr.h"
 #include "freertos/task.h"
 
 static const char *TAG = "veh_ctrl";
@@ -34,11 +35,13 @@ static const char *TAG = "veh_ctrl";
 #define GEAR_DRIVE    4
 
 // Door unlatch: VCSEC held OPEN for 8 consecutive frames (~800 ms) in captures,
-// but it keeps sending its own all-zero 0x1F9 at 100 ms while we inject, so
-// send 5x faster so ours dominate (20 ms worked reliably on the car; 5 ms and
-// a phase-locked variant did not). Reason RKE = remote keyless entry (app).
-#define UNLATCH_PERIOD_MS   20
-#define UNLATCH_REPEATS     40
+// but it keeps sending its own all-zero 0x1F9 at 100 ms while we inject. On the
+// car: 100 ms injection latched at random, 20 ms most of the time, 5 ms never
+// (flooding the ID is rejected). So: phase-lock to the car — send ours right
+// after each of its frames so the NONE is overwritten within ~1 ms — plus a
+// 20 ms fill between them. Reason RKE = remote keyless entry (app / phone key).
+#define UNLATCH_FILL_MS     20
+#define UNLATCH_HOLD_MS     800
 // Diagnostic frame injected into the app's CAN stream (not sent on the bus):
 // [TEC, REC, flags>>16, door, phase(0=before,1=after)]. 0x7FD is
 // never used by the car. flags: bit0 EWARN,1 RXWARN,2 TXWARN,3 RXBP,4 TXBP,5 TXBO.
@@ -69,6 +72,8 @@ typedef struct {
 } vc_request_t;
 
 static QueueHandle_t s_queue = NULL;
+static SemaphoreHandle_t s_unlatch_sem = NULL;   // given on each car 0x1F9 while unlatching
+static volatile uint32_t s_unlatch_id = 0;      // 0 = no unlatch in progress
 
 // Continuous RMW injector: overrides one signal on the car's live frame every
 // period_ms until the car's own value moves away from the baseline captured
@@ -223,10 +228,22 @@ static void door_unlatch(uint16_t door)
     dbc_pack(f.data, sr, REASON_RKE);
     ESP_LOGI(TAG, "door unlatch %u", door);
     unlatch_diag(door, 0);
-    for (int i = 0; i < UNLATCH_REPEATS; i++) {
+    xSemaphoreTake(s_unlatch_sem, 0);   // drop a stale give
+    s_unlatch_id = f.id;
+    TickType_t end = xTaskGetTickCount() + pdMS_TO_TICKS(UNLATCH_HOLD_MS);
+    while ((int32_t)(end - xTaskGetTickCount()) > 0) {
         // A full TX FIFO (busy bus) just costs one frame; keep the hold going.
         can_frame_send(VC_BUS, "VCSEC_requests", &f);
-        vTaskDelay(pdMS_TO_TICKS(UNLATCH_PERIOD_MS));
+        xSemaphoreTake(s_unlatch_sem, pdMS_TO_TICKS(UNLATCH_FILL_MS));
+    }
+    s_unlatch_id = 0;
+    unlatch_diag(door, 1);
+}
+
+void vehicle_control_on_frame(const can_tagged_frame_t *frame)
+{
+    if (s_unlatch_id && frame->bus_id == VC_BUS && frame->frame.id == s_unlatch_id) {
+        xSemaphoreGive(s_unlatch_sem);
     }
     unlatch_diag(door, 1);
 }
@@ -357,7 +374,8 @@ static void vehicle_control_task(void *arg)
 esp_err_t vehicle_control_init(void)
 {
     s_queue = xQueueCreate(8, sizeof(vc_request_t));
-    if (!s_queue) {
+    s_unlatch_sem = xSemaphoreCreateBinary();
+    if (!s_queue || !s_unlatch_sem) {
         return ESP_ERR_NO_MEM;
     }
     xTaskCreatePinnedToCore(vehicle_control_task, "veh_ctrl", 4096, NULL, 5, NULL, 0);

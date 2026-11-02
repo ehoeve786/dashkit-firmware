@@ -49,6 +49,10 @@ typedef struct {
 } rx_frame_t;
 
 static QueueHandle_t s_rxq;
+// Pending infotainment commands from the app (uint8_t: 1=Low Power on, 0=off).
+// The poll loop waits on this instead of sleeping, so a command goes out at
+// once rather than at the next 10 s poll.
+static QueueHandle_t s_cmdq;
 
 // RX callbacks run on the NimBLE host task and must not put a 600-byte frame
 // on its stack. recv_for_route() uses a separate task-owned item so callback
@@ -328,6 +332,96 @@ static esp_err_t refresh_status(tesla_session_t *sess, const char *vin,
     return ESP_ERR_TIMEOUT;
 }
 
+// Handshake `sess` for `domain` over the open link. Fresh each connect — the
+// boot-relative clock cannot carry a session's vehicle-clock offset across a
+// reboot, so the client always re-syncs rather than caching a stale epoch.
+static esp_err_t handshake(tesla_session_t *sess, uint8_t domain,
+                           const tesla_keypair_t *key, const char *vin)
+{
+    uint8_t routing[16], challenge[16], req[400];
+    size_t req_len = 0, resp_len = 0;
+
+    tesla_session_init(sess, domain, now_ms);
+    esp_fill_random(routing, sizeof(routing));
+    esp_fill_random(challenge, sizeof(challenge));
+    if (tesla_build_handshake_request(domain, key->pub, routing, challenge,
+                                      req, sizeof(req), &req_len) != 0) {
+        ESP_LOGE(TAG, "failed to build handshake request (domain %u)", domain);
+        return ESP_FAIL;
+    }
+    if (tesla_ble_send(req, req_len) != ESP_OK) {
+        ESP_LOGW(TAG, "handshake send failed");
+        return ESP_FAIL;
+    }
+    if (recv_for_route(s_client_response, sizeof(s_client_response), &resp_len,
+                       RESPONSE_TIMEOUT_MS, routing) != ESP_OK) {
+        ESP_LOGW(TAG, "no handshake response (domain %u; car asleep?)", domain);
+        return ESP_ERR_TIMEOUT;
+    }
+    if (tesla_session_handshake(sess, key, (const uint8_t *)vin, strlen(vin),
+                                challenge, s_client_response, resp_len,
+                                hw_rng, NULL) != 0) {
+        ESP_LOGW(TAG, "handshake rejected (domain %u; key not enrolled?)", domain);
+        return ESP_FAIL;
+    }
+    if (!sess->whitelisted) {
+        // HMAC was valid (we have K), but the car reports this key is NOT on
+        // the whitelist — un-enrolled, so commands will fail.
+        ESP_LOGW(TAG, "handshake OK, but key NOT on whitelist (enroll via pairing)");
+        return ESP_FAIL;
+    }
+    ESP_LOGI(TAG, "domain %u handshake complete (counter=%u)", domain,
+             (unsigned)sess->counter);
+    return ESP_OK;
+}
+
+// CarServer.Action{vehicleAction{setLowPowerModeAction{low_power_mode}}}
+// (car_server.proto), hand-encoded: the Action/VehicleAction oneofs are
+// field 2 and field 130 (tag varint 0x92 0x08) and the bool is field 1. This
+// avoids vendoring car_server.proto + vehicle.proto into nanopb for one 7-byte
+// message. proto3 omits a false bool, so "off" is an empty inner message.
+static esp_err_t send_low_power(tesla_session_t *sess, const char *vin, bool on)
+{
+    static const uint8_t k_on[]  = {0x12, 0x05, 0x92, 0x08, 0x02, 0x08, 0x01};
+    static const uint8_t k_off[] = {0x12, 0x03, 0x92, 0x08, 0x00};
+    uint8_t req[400], plain[TESLA_PB_PAYLOAD_MAX];
+    uint8_t request_hash[33], routing[16], uuid[16];
+    size_t req_len, req_hash_len, resp_len = 0, plain_len = 0;
+    uint32_t fault = 0;
+
+    esp_fill_random(routing, sizeof(routing));
+    esp_fill_random(uuid, sizeof(uuid));
+    if (tesla_session_build_command(sess, (const uint8_t *)vin, strlen(vin),
+                                    TESLA_DOMAIN_INFOTAINMENT,
+                                    on ? k_on : k_off, on ? sizeof(k_on) : sizeof(k_off),
+                                    routing, uuid, req, sizeof(req), &req_len,
+                                    request_hash, &req_hash_len, hw_rng, NULL) != 0 ||
+        tesla_ble_send(req, req_len) != ESP_OK) {
+        ESP_LOGW(TAG, "low power: build/send failed");
+        return ESP_FAIL;
+    }
+    if (recv_for_route(s_client_response, sizeof(s_client_response), &resp_len,
+                       RESPONSE_TIMEOUT_MS, routing) != ESP_OK) {
+        ESP_LOGW(TAG, "low power: no response");
+        return ESP_ERR_TIMEOUT;
+    }
+    if (tesla_session_process_response(sess, (const uint8_t *)vin, strlen(vin),
+                                       request_hash, req_hash_len,
+                                       s_client_response, resp_len,
+                                       plain, sizeof(plain), &plain_len, &fault) != 0) {
+        ESP_LOGW(TAG, "low power: response rejected");
+        return ESP_FAIL;
+    }
+    // CarServer.Response{actionStatus{result}}: an ERROR result encodes as
+    // 0a <len> 08 01 ...; OK is the default (omitted) so anything else passes.
+    if (fault != 0 || (plain_len >= 4 && plain[0] == 0x0a && plain[2] == 0x08 && plain[3] == 0x01)) {
+        ESP_LOGW(TAG, "low power %s rejected (fault=%u)", on ? "on" : "off", (unsigned)fault);
+        return ESP_FAIL;
+    }
+    ESP_LOGI(TAG, "low power mode %s", on ? "enabled" : "disabled");
+    return ESP_OK;
+}
+
 // Discard any stale frames left from the previous cycle so a late reply never
 // lingers to be misrouted or to overflow the queue at the next poll.
 static void drain_rxq(void)
@@ -381,54 +475,23 @@ static void client_task(void *arg)
             continue;
         }
 
-        // VCSEC handshake (fresh each connect — the boot-relative clock cannot
-        // carry a session's vehicle-clock offset across a reboot, so the client
-        // always re-syncs rather than caching a stale epoch/offset).
-        tesla_session_t sess;
-        tesla_session_init(&sess, TESLA_DOMAIN_VEHICLE_SECURITY, now_ms);
-        {
-            uint8_t routing[16], challenge[16], req[400];
-            size_t req_len = 0, resp_len = 0;
-            esp_fill_random(routing, sizeof(routing));
-            esp_fill_random(challenge, sizeof(challenge));
-            if (tesla_build_handshake_request(TESLA_DOMAIN_VEHICLE_SECURITY,
-                                              key.pub, routing, challenge,
-                                              req, sizeof(req), &req_len) != 0) {
-                ESP_LOGE(TAG, "failed to build handshake request");
-                goto link_down;
-            }
-            if (tesla_ble_send(req, req_len) != ESP_OK) {
-                ESP_LOGW(TAG, "handshake send failed");
-                goto link_down;
-            }
-            if (recv_for_route(s_client_response, sizeof(s_client_response), &resp_len,
-                               RESPONSE_TIMEOUT_MS, routing) != ESP_OK) {
-                ESP_LOGW(TAG, "no handshake response (car asleep?)");
-                goto link_down;
-            }
-            if (tesla_session_handshake(&sess, &key, (const uint8_t *)vin, strlen(vin),
-                                        challenge, s_client_response, resp_len,
-                                        hw_rng, NULL) != 0) {
-                ESP_LOGW(TAG, "handshake rejected (key not enrolled?)");
-                goto link_down;
-            }
-            if (!sess.whitelisted) {
-                // HMAC was valid (we have K), but the car reports this key is
-                // NOT on the whitelist — un-enrolled, so poll will fail.
-                ESP_LOGW(TAG, "handshake OK, but key NOT on whitelist "
-                              "(enroll via pairing)");
-                goto link_down;
-            }
-            ESP_LOGI(TAG, "VCSEC handshake complete (counter=%u)",
-                     (unsigned)sess.counter);
+        // VCSEC session for the status poll. The infotainment session is only
+        // set up when a command needs it: that domain answers only while the
+        // car is awake, and the poll must keep working on a sleeping car.
+        tesla_session_t sess, info;
+        info.valid = false;
+        if (handshake(&sess, TESLA_DOMAIN_VEHICLE_SECURITY, &key, vin) != ESP_OK) {
+            goto link_down;
         }
 
         // Persistent poll over the open link (matches esphome-tesla-ble) —
         // VCSEC polling is low-power and does not wake the car. Abort on the
         // first refresh failure and reconnect; the debounced report keeps the
-        // app "connected" across transient RF drops.
+        // app "connected" across transient RF drops. Between polls, wait on the
+        // command queue so an app command is sent immediately.
         {
             int last_presence = -1, last_lock = -1, last_sleep = -1;
+            uint8_t cmd;
             for (;;) {
                 drain_rxq();
                 if (refresh_status(&sess, vin,
@@ -436,7 +499,14 @@ static void client_task(void *arg)
                     break;
                 }
                 last_good_ms = now_ms();
-                vTaskDelay(pdMS_TO_TICKS(STATUS_POLL_MS));
+                if (xQueueReceive(s_cmdq, &cmd, pdMS_TO_TICKS(STATUS_POLL_MS)) == pdTRUE) {
+                    drain_rxq();
+                    if ((info.valid ||
+                         handshake(&info, TESLA_DOMAIN_INFOTAINMENT, &key, vin) == ESP_OK) &&
+                        send_low_power(&info, vin, cmd != 0) == ESP_FAIL) {
+                        info.valid = false;   // re-handshake before the next command
+                    }
+                }
             }
         }
 
@@ -447,10 +517,20 @@ static void client_task(void *arg)
     }
 }
 
+esp_err_t tesla_ble_client_set_low_power(bool on)
+{
+    uint8_t v = on;
+    if (s_cmdq == NULL) return ESP_ERR_INVALID_STATE;
+    // Depth 1 + overwrite: only the latest requested state matters.
+    xQueueOverwrite(s_cmdq, &v);
+    return ESP_OK;
+}
+
 esp_err_t tesla_ble_client_init(void)
 {
     s_rxq = xQueueCreate(4, sizeof(rx_frame_t));
-    if (s_rxq == NULL) {
+    s_cmdq = xQueueCreate(1, sizeof(uint8_t));
+    if (s_rxq == NULL || s_cmdq == NULL) {
         ESP_LOGE(TAG, "failed to create rx queue");
         return ESP_ERR_NO_MEM;
     }

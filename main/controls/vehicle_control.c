@@ -2,6 +2,9 @@
 #include "dbc.h"
 #include "automation_manager.h"
 #include "ble_server.h"
+#ifdef CONFIG_DASHKIT_TESLA_BLE
+#include "tesla_ble_client.h"
+#endif
 
 #include "esp_log.h"
 #include "esp_system.h"
@@ -258,6 +261,12 @@ static void vehicle_control_task(void *arg)
             mirror_dip_toggle();
             continue;
         }
+#ifdef CONFIG_DASHKIT_TESLA_BLE
+        if (req.opcode == VC_CMD_LOW_POWER) {
+            tesla_ble_client_set_low_power(req.value != 0);
+            continue;
+        }
+#endif
         if (req.opcode == VC_CMD_REBOOT) {
             ESP_LOGW(TAG, "reboot requested, restarting");
             vTaskDelay(pdMS_TO_TICKS(200));  // let the BLE write ack flush
@@ -301,6 +310,9 @@ esp_err_t vehicle_control_submit(uint8_t opcode, uint16_t value)
         opcode != VC_CMD_REAR_FAN_TOGGLE &&
         opcode != VC_CMD_MIRROR_DIP_TOGGLE &&
         opcode != VC_CMD_REBOOT &&
+#ifdef CONFIG_DASHKIT_TESLA_BLE
+        opcode != VC_CMD_LOW_POWER &&
+#endif
         !is_config_opcode(opcode) &&
         !find_command(opcode)) {
         ESP_LOGW(TAG, "reject unknown opcode 0x%02X", opcode);

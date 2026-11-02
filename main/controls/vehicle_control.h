@@ -85,6 +85,12 @@ typedef enum {
     VC_CMD_AC_SWING_INTENSITY = 0x4D,
     // Config only, not persisted. value is ignored.
     VC_CMD_AC_SWING_TOGGLE = 0x4E,
+
+    // --- Tesla Low Power mode (BLE vehicle-command, infotainment domain) ---
+    // Not a CAN frame: sent over the Tesla BLE link by tesla_ble_client.
+    // value: 1=enable, 0=disable. Requires CONFIG_DASHKIT_TESLA_BLE and an
+    // enrolled key; the car must be awake.
+    VC_CMD_LOW_POWER = 0x4F,
 } vehicle_control_opcode_t;
 
 // Create the command queue and worker task. Call once at startup.

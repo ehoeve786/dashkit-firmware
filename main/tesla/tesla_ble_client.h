@@ -12,6 +12,7 @@
 #pragma once
 
 #include "esp_err.h"
+#include <stdbool.h>
 
 #ifdef __cplusplus
 extern "C" {
@@ -21,6 +22,11 @@ extern "C" {
 // when CONFIG_DASHKIT_TESLA_BLE is enabled; with no enrolled key/link it logs
 // a canary and waits.
 esp_err_t tesla_ble_client_init(void);
+
+// Queue a Tesla Low Power mode change (CarServer setLowPowerModeAction over
+// the infotainment domain). Sent by the poll loop on the open link; the car
+// must be awake for the infotainment domain to answer. Latest request wins.
+esp_err_t tesla_ble_client_set_low_power(bool on);
 
 #ifdef __cplusplus
 }

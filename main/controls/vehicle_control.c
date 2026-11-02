@@ -230,7 +230,6 @@ static void door_unlatch(uint16_t door)
             can_frame_send(VC_BUS, "VCSEC_requests", &f);
             vTaskDelay(pdMS_TO_TICKS(UNLATCH_PERIOD_MS));
         }
-    }
         unlatch_diag(door, a + 1);
     }
 }

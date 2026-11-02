@@ -1,6 +1,5 @@
 #pragma once
 
-#include "can_interface.h"
 #include "esp_err.h"
 #include <stdint.h>
 
@@ -94,10 +93,6 @@ typedef enum {
     // value: 0=front left (driver), 1=front right, 2=rear left, 3=rear right.
     VC_CMD_DOOR_UNLATCH = 0x50,  // (0x4F reserved by the Low Power draft, PR #6)
 } vehicle_control_opcode_t;
-
-// RX hook (called by can_manager for every received frame): phase-locks an
-// in-progress door unlatch to the car's own VCSEC_requests frames.
-void vehicle_control_on_frame(const can_tagged_frame_t *frame);
 
 // Create the command queue and worker task. Call once at startup.
 esp_err_t vehicle_control_init(void);

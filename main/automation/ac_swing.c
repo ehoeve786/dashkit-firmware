@@ -39,6 +39,7 @@ static const char *TAG = "ac_swing";
 
 #define NVS_NAMESPACE     "ac_swing"
 #define NVS_KEY_SIDE      "side"
+#define NVS_KEY_AXIS      "axis"
 #define NVS_KEY_INTENSITY "int"
 
 enum { SIDE_DRIVER, SIDE_PASSENGER, SIDE_BOTH, SIDE_COUNT };
@@ -51,6 +52,11 @@ static const char *const VENT_SIGS[] = {
 #define VENT_SIG_COUNT (sizeof(VENT_SIGS) / sizeof(VENT_SIGS[0]))
 #define LEFT_X  0
 #define RIGHT_X 3
+#define LEFT_Y      1
+#define LEFT_SPLIT  2
+#define RIGHT_SPLIT 5
+enum { AXIS_X, AXIS_SPLIT, AXIS_COUNT };
+#define VENT_SET_HOLD_US (1000 * 1000)
 
 static const uint8_t LOW_STEPS[]    = { 50, 100, 150 };
 #define LOW_DWELL_MS    4000
@@ -61,6 +67,10 @@ static volatile bool    s_on;
 static volatile int64_t s_on_since_us;
 static volatile uint8_t s_side = SIDE_DRIVER;
 static volatile uint8_t s_intensity = INTENSITY_FULL;
+static volatile uint8_t s_axis = AXIS_X;
+// One-shot VC_CMD_VENT_SET: raw 0-200 targets (0xFF = keep), held until s_set_until_us.
+static volatile uint8_t s_set_y = 0xFF, s_set_split = 0xFF;
+static volatile int64_t s_set_until_us;
 static volatile bool    s_active;
 static int64_t          s_start_us;
 
@@ -83,6 +93,9 @@ static void save_config(void)
         return;
     }
     err = nvs_set_u8(nvs, NVS_KEY_SIDE, s_side);
+    if (err == ESP_OK) {
+        err = nvs_set_u8(nvs, NVS_KEY_AXIS, s_axis);
+    }
     if (err == ESP_OK) {
         err = nvs_set_u8(nvs, NVS_KEY_INTENSITY, s_intensity);
     }
@@ -108,6 +121,9 @@ static void load_config(void)
     if (nvs_get_u8(nvs, NVS_KEY_INTENSITY, &v) == ESP_OK && v < INTENSITY_COUNT) {
         s_intensity = v;
     }
+    if (nvs_get_u8(nvs, NVS_KEY_AXIS, &v) == ESP_OK && v < AXIS_COUNT) {
+        s_axis = v;
+    }
     nvs_close(nvs);
 }
 
@@ -128,7 +144,7 @@ static void ac_swing_init(automation_t *self)
     }
     s_ready = true;
     xTaskCreatePinnedToCore(inject_task, "ac_swing_inj", 4096, NULL, 5, NULL, 0);
-    ESP_LOGI(TAG, "AC swing READY, side %u, intensity %u", s_side, s_intensity);
+    ESP_LOGI(TAG, "AC swing READY, side %u, intensity %u, axis %u", s_side, s_intensity, s_axis);
 }
 
 static void turn_off(const char *why)
@@ -262,7 +278,8 @@ static void inject_task(void *arg)
         if (s_on && now - s_on_since_us >= MAX_ON_US) {
             turn_off("max duration reached");
         }
-        if (!s_on) {
+        bool holding = now < s_set_until_us;
+        if (!s_on && !holding) {
             why = "off";
         } else {
             bool fresh = false;
@@ -279,14 +296,21 @@ static void inject_task(void *arg)
 
         if (why) {
             set_active(false, why, now);
+        } else if (holding) {
+            // One-shot position takes precedence over the swing while it holds.
+            if (s_set_y != 0xFF) dbc_pack(f.data, s_vent_sigs[LEFT_Y], s_set_y);
+            if (s_set_split != 0xFF) dbc_pack(f.data, s_vent_sigs[LEFT_SPLIT], s_set_split);
+            can_frame_send(VENT_BUS, VENT_MSG, &f);
         } else {
             set_active(true, "on, live vent frame", now);
             uint8_t x = swing_x(now - s_start_us);
+            int left = s_axis == AXIS_SPLIT ? LEFT_SPLIT : LEFT_X;
+            int right = s_axis == AXIS_SPLIT ? RIGHT_SPLIT : RIGHT_X;
             if (s_side != SIDE_PASSENGER) {
-                dbc_pack(f.data, s_vent_sigs[LEFT_X], x);
+                dbc_pack(f.data, s_vent_sigs[left], x);
             }
             if (s_side != SIDE_DRIVER) {
-                dbc_pack(f.data, s_vent_sigs[RIGHT_X], x);
+                dbc_pack(f.data, s_vent_sigs[right], x);
             }
             can_frame_send(VENT_BUS, VENT_MSG, &f);
         }
@@ -299,6 +323,24 @@ static void ac_swing_on_config(automation_t *self, uint8_t opcode, uint16_t valu
     (void)self;
     if (opcode == VC_CMD_AC_SWING_TOGGLE) {
         toggle();
+        return;
+    }
+    if (opcode == VC_CMD_VENT_SET) {
+        uint8_t y = value >> 8, split = value & 0xFF;
+        s_set_y = y <= 100 ? y * 2 : 0xFF;
+        s_set_split = split <= 100 ? split * 2 : 0xFF;
+        s_set_until_us = s_ready ? esp_timer_get_time() + VENT_SET_HOLD_US : 0;
+        ESP_LOGW(TAG, "vent set: Y=%u%% split=%u%% (0xFF=keep raw) hold 1s", y, split);
+        return;
+    }
+    if (opcode == VC_CMD_AC_SWING_AXIS) {
+        uint8_t axis = value < AXIS_COUNT ? (uint8_t)value : AXIS_X;
+        if (axis == s_axis) {
+            return;
+        }
+        ESP_LOGW(TAG, "axis %u -> %u", s_axis, axis);
+        s_axis = axis;
+        save_config();
         return;
     }
     if (opcode == VC_CMD_AC_SWING_SIDE) {

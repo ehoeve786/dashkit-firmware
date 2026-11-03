@@ -9,6 +9,54 @@
 #include <stdbool.h>
 #include <string.h>
 
+#ifdef CONFIG_DASHKIT_CAN_ACCEPT_ALL
+#include "driver/usb_serial_jtag.h"
+#include "driver/usb_serial_jtag_vfs.h"
+#include "dbc_generated.h"
+#include <stdio.h>
+
+// Discovery: every frame goes to USB as "ms,bus,id,data" (on payload change
+// only); only DBC IDs go on to BLE, so the BLE link (and OTA) see normal load.
+// Bus 0=chassis, 1=vehicle. Per-bus tables -> no race between the RX tasks.
+static uint64_t s_last[DBC_HW_FILTER_BUS_COUNT][2048];
+static uint32_t s_seen[DBC_HW_FILTER_BUS_COUNT][2048 / 32];
+
+static bool in_dbc_set(uint8_t bus, uint32_t id)
+{
+    const dbc_hw_filter_set_t *fs = &g_dbc_hw_filters[bus];
+    for (uint8_t i = 0; i < fs->count; i++) {
+        if (fs->ids[i] == id) return true;
+    }
+    return false;
+}
+
+// Returns true if the frame should still be forwarded to BLE.
+static bool discovery_log(const can_tagged_frame_t *f)
+{
+    uint8_t b = f->bus_id, n = f->frame.dlc;
+    uint32_t id = f->frame.id;
+    if (b >= DBC_HW_FILTER_BUS_COUNT || f->frame.extended || n > 8) return false;
+
+    uint64_t v = 0;
+    memcpy(&v, f->frame.data, n);
+    uint32_t bit = 1u << (id & 31), *seen = &s_seen[b][id >> 5];
+    if (!(*seen & bit) || s_last[b][id] != v) {
+        *seen |= bit;
+        s_last[b][id] = v;
+        char line[40];
+        int len = snprintf(line, sizeof(line), "%lu,%u,0x%lx,",
+                           (unsigned long)(esp_timer_get_time() / 1000),
+                           (unsigned)b, (unsigned long)id);
+        for (uint8_t i = 0; i < n; i++) {
+            len += snprintf(line + len, 3, "%02x", f->frame.data[i]);
+        }
+        line[len++] = '\n';
+        usb_serial_jtag_write_bytes(line, len, 0);  // never block the RX task
+    }
+    return in_dbc_set(b, id);
+}
+#endif
+
 static const char *TAG = "can_mgr";
 
 // Sized to absorb a few hundred ms of CAN traffic if BLE briefly stalls.
@@ -33,6 +81,9 @@ static void on_frame_received(const can_tagged_frame_t *frame, void *user_ctx)
     // timeout reflects "no more *matching* frames" rather than "no more
     // frames at all". This avoids holding onto a matching frame while we
     // wait through a flood of unrelated traffic.
+#ifdef CONFIG_DASHKIT_CAN_ACCEPT_ALL
+    if (!discovery_log(frame)) return;
+#endif
     if (!can_filter_should_forward(frame->bus_id, frame->frame.id)) return;
 
     can_tagged_frame_t stamped = *frame;
@@ -44,6 +95,13 @@ static void on_frame_received(const can_tagged_frame_t *frame, void *user_ctx)
 esp_err_t can_manager_init(void)
 {
     s_rx_queue = xQueueCreate(RX_QUEUE_DEPTH, sizeof(can_tagged_frame_t));
+#ifdef CONFIG_DASHKIT_CAN_ACCEPT_ALL
+    usb_serial_jtag_driver_config_t ucfg = USB_SERIAL_JTAG_DRIVER_CONFIG_DEFAULT();
+    ucfg.tx_buffer_size = 16384;
+    if (usb_serial_jtag_driver_install(&ucfg) == ESP_OK) {
+        usb_serial_jtag_vfs_use_driver();  // console logs share the driver, no interleaving
+    }
+#endif
     if (!s_rx_queue) {
         return ESP_ERR_NO_MEM;
     }

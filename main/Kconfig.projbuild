@@ -32,8 +32,8 @@ menu "DashKit"
         bool "Forward every CAN ID (discovery mode)"
         default n
         help
-            Bypass the generated per-bus hardware RX filters and accept every
-            frame on both buses. For discovering which IDs a car sends; the
-            BLE link cannot carry a full bus, so frames are dropped and the
-            dashboard will stutter while this is on.
+            Bypass the hardware RX filters and stream every frame on both
+            buses (on payload change) to USB-Serial-JTAG as ms,bus,id,data
+            (bus 0=chassis, 1=vehicle). Only DBC IDs are forwarded to BLE,
+            so the dashboard and OTA keep working.
 endmenu

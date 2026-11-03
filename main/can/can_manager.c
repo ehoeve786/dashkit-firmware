@@ -14,6 +14,7 @@
 #include "driver/usb_serial_jtag.h"
 #include "driver/usb_serial_jtag_vfs.h"
 #include "dbc_generated.h"
+#include "mcp251xfd.h"
 #include "esp_event.h"
 #include "esp_netif.h"
 #include "esp_wifi.h"
@@ -36,6 +37,7 @@ static bool s_discovery;
 // Wi-Fi sink: the same lines, UDP to the hotspot (the gateway = the phone).
 static RingbufHandle_t s_udp_rb;
 static esp_netif_t *s_sta;
+static volatile uint32_t s_udp_drops;  // lines dropped on the DashKit (Wi-Fi queue full)
 
 static void wifi_reconnect(void *arg, esp_event_base_t base, int32_t id, void *data)
 {
@@ -53,17 +55,42 @@ static void udp_task(void *arg)
         .sin_port = htons(CONFIG_DASHKIT_DISCOVERY_UDP_PORT),
     };
     esp_netif_ip_info_t ip;
-    size_t n;
-    void *p;
+    // Line-aligned datagrams, each starting "#<seq>" so the app can count lost
+    // datagrams; once a second a "#stat,ms,ovf_bus0,ovf_bus1,drops" line too.
+    static char pkt[1400];
+    uint32_t seq = 0;
+    int64_t next_stat = 0;
     while (true) {
         vTaskDelay(pdMS_TO_TICKS(20));  // batch lines into ~1.4 KB datagrams
         // Unicast to the gateway: no reliance on the hotspot passing broadcasts.
         bool up = esp_netif_get_ip_info(s_sta, &ip) == ESP_OK && ip.gw.addr;
         dst.sin_addr.s_addr = ip.gw.addr;
-        while ((p = xRingbufferReceiveUpTo(s_udp_rb, &n, 0, 1400))) {
-            if (up) sendto(sock, p, n, 0, (struct sockaddr *)&dst, sizeof(dst));
-            vRingbufferReturnItem(s_udp_rb, p);
+        int hdr = snprintf(pkt, sizeof(pkt), "#%lu\n", (unsigned long)seq), n = hdr;
+        int64_t now = esp_timer_get_time();
+        if (now >= next_stat) {
+            next_stat = now + 1000000;
+            n += snprintf(pkt + n, sizeof(pkt) - n, "#stat,%lld,%lu,%lu,%lu\n",
+                          (long long)(now / 1000),
+                          (unsigned long)g_mcp251xfd_rx_overflows[0],
+                          (unsigned long)g_mcp251xfd_rx_overflows[1],
+                          (unsigned long)s_udp_drops);
         }
+        size_t len;
+        char *it;
+        do {
+            it = xRingbufferReceive(s_udp_rb, &len, 0);
+            if (n > hdr && (!it || (size_t)n + len > sizeof(pkt))) {  // full, or queue empty
+                // A failed or skipped send still uses its seq: the app counts the gap.
+                if (up) sendto(sock, pkt, n, 0, (struct sockaddr *)&dst, sizeof(dst));
+                seq++;
+                n = hdr = snprintf(pkt, sizeof(pkt), "#%lu\n", (unsigned long)seq);
+            }
+            if (it) {
+                memcpy(pkt + n, it, len);  // len <= 37 < datagram headroom
+                n += len;
+                vRingbufferReturnItem(s_udp_rb, it);
+            }
+        } while (it);
     }
 }
 
@@ -87,7 +114,7 @@ static void wifi_apply(const char *ssid, const char *pass)
 // Credentials live in NVS ("disc"/"ssid","pass"), set by the app over BLE.
 static void wifi_init(void)
 {
-    s_udp_rb = xRingbufferCreate(16384, RINGBUF_TYPE_BYTEBUF);
+    s_udp_rb = xRingbufferCreate(16384, RINGBUF_TYPE_NOSPLIT);  // one item per line
     if (!s_udp_rb) return;
     esp_netif_init();
     esp_event_loop_create_default();
@@ -181,7 +208,7 @@ static bool discovery_log(const can_tagged_frame_t *f)
         }
         line[len++] = '\n';
         usb_serial_jtag_write_bytes(line, len, 0);  // never block the RX task
-        if (s_udp_rb) xRingbufferSend(s_udp_rb, line, len, 0);
+        if (s_udp_rb && xRingbufferSend(s_udp_rb, line, len, 0) != pdTRUE) s_udp_drops++;
     }
     return in_dbc_set(b, id);
 }

@@ -288,6 +288,8 @@ static esp_err_t configure_bitrate(mcp251xfd_ctx_t *ctx)
     return ESP_OK;
 }
 
+volatile uint32_t g_mcp251xfd_rx_overflows[2];
+
 static esp_err_t configure_fifos(mcp251xfd_ctx_t *ctx)
 {
     // FIFO 1: RX FIFO - 32 messages deep (max for FSIZE field), 8 byte payload.
@@ -366,6 +368,7 @@ static void read_rx_fifo(mcp251xfd_ctx_t *ctx)
         // Count it and clear the flag (write 0 to RXOVIF, preserving the rest).
         if (fifosta & FIFOSTA_RXOVIF) {
             ctx->rx_overflow_events++;
+            if (ctx->bus_id < 2) g_mcp251xfd_rx_overflows[ctx->bus_id]++;
             write_reg32(ctx, REG_C1FIFOSTA(1), fifosta & ~FIFOSTA_RXOVIF);
         }
 

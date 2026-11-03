@@ -23,3 +23,6 @@ can_interface_t *mcp251xfd_create(const mcp251xfd_config_t *config);
 
 // Destroy and free resources
 void mcp251xfd_destroy(can_interface_t *iface);
+
+// RX FIFO overflow events per physical bus (0, 1); each = >=1 dropped frame.
+extern volatile uint32_t g_mcp251xfd_rx_overflows[2];

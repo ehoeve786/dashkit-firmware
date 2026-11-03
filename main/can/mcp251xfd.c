@@ -131,7 +131,7 @@ static esp_err_t spi_write_reg(mcp251xfd_ctx_t *ctx, uint16_t addr, const uint8_
     t.tx_buffer = buf;
 
     xSemaphoreTake(ctx->spi_mutex, portMAX_DELAY);
-    esp_err_t err = spi_device_polling_transmit(ctx->spi_dev, &t);
+    esp_err_t err = spi_device_transmit(ctx->spi_dev, &t);  // blocks, so the core can idle (TWDT)
     xSemaphoreGive(ctx->spi_mutex);
     return err;
 }
@@ -154,7 +154,7 @@ static esp_err_t spi_read_reg(mcp251xfd_ctx_t *ctx, uint16_t addr, uint8_t *data
     };
 
     xSemaphoreTake(ctx->spi_mutex, portMAX_DELAY);
-    esp_err_t err = spi_device_polling_transmit(ctx->spi_dev, &t);
+    esp_err_t err = spi_device_transmit(ctx->spi_dev, &t);  // blocks, so the core can idle (TWDT)
     xSemaphoreGive(ctx->spi_mutex);
     if (err == ESP_OK) {
         memcpy(data, rx_buf + 2, len);

@@ -12,6 +12,10 @@ esp_err_t can_manager_init(void);
 #ifdef CONFIG_DASHKIT_CAN_ACCEPT_ALL
 // Persist hotspot credentials (NVS) and (re)connect; empty ssid = Wi-Fi off.
 esp_err_t can_discovery_set_wifi(const char *ssid, const char *pass);
+// Persist discovery mode and reboot into it if it changed.
+esp_err_t can_discovery_set_mode(bool on);
+// Discovery mode active this boot (valid after can_manager_init()).
+bool can_discovery_active(void);
 #endif
 
 // Register a CAN interface with the manager. Takes ownership of lifecycle.

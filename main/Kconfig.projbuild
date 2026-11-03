@@ -29,18 +29,19 @@ menu "DashKit"
             mapping button events to vehicle controls. Work in progress.
 
     config DASHKIT_CAN_ACCEPT_ALL
-        bool "Forward every CAN ID (discovery mode)"
+        bool "CAN discovery mode (runtime toggle from the app)"
         default n
         help
-            Bypass the hardware RX filters and stream every frame on both
-            buses (on payload change) to USB-Serial-JTAG as ms,bus,id,data
-            (bus 0=chassis, 1=vehicle). Only DBC IDs are forwarded to BLE,
-            so the dashboard and OTA keep working. If the app has set hotspot
-            credentials (app-channel command 0x10) the same lines are also
-            UDP-broadcast on that network.
+            Compiles in a discovery mode the app switches on/off (app-channel
+            0x11, persisted; the DashKit reboots on change). Off = normal
+            behaviour. On = HW RX filters bypassed and every frame (on payload
+            change) streamed as ms,bus,id,data (bus 0=chassis, 1=vehicle) to
+            USB-Serial-JTAG and, once the app has set hotspot credentials
+            (0x10), over UDP to the hotspot gateway (the phone). BLE always
+            carries only the DBC IDs, so the dashboard and OTA keep working.
 
     config DASHKIT_DISCOVERY_UDP_PORT
-        int "Discovery: UDP broadcast port"
+        int "Discovery: UDP port on the phone"
         depends on DASHKIT_CAN_ACCEPT_ALL
         range 1024 65535
         default 4242

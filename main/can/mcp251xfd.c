@@ -1,5 +1,6 @@
 #include "mcp251xfd.h"
 #include "dbc/dbc_generated.h"
+#include "can_manager.h"
 #include "esp_log.h"
 #include "esp_timer.h"
 #include "freertos/FreeRTOS.h"
@@ -307,13 +308,15 @@ static esp_err_t configure_fifos(mcp251xfd_ctx_t *ctx)
     if (err != ESP_OK) return err;
 
 #ifdef CONFIG_DASHKIT_CAN_ACCEPT_ALL
-    // Discovery mode: a single filter with an all-don't-care mask accepts
-    // every ID (MIDE=0 in the mask also admits extended frames).
-    write_reg32(ctx, REG_C1FLTOBJ(0), 0);
-    write_reg32(ctx, REG_C1MASK(0), 0);
-    err = write_reg32(ctx, REG_C1FLTCON(0), 0x81);  // FLTEN, FIFO 1
-    ESP_LOGW(TAG, "Bus %u: HW RX filter bypassed (accept all)", (unsigned)ctx->bus_id);
-    return err;
+    if (can_discovery_active()) {
+        // Discovery mode: a single filter with an all-don't-care mask accepts
+        // every ID (MIDE=0 in the mask also admits extended frames).
+        write_reg32(ctx, REG_C1FLTOBJ(0), 0);
+        write_reg32(ctx, REG_C1MASK(0), 0);
+        err = write_reg32(ctx, REG_C1FLTCON(0), 0x81);  // FLTEN, FIFO 1
+        ESP_LOGW(TAG, "Bus %u: HW RX filter bypassed (accept all)", (unsigned)ctx->bus_id);
+        return err;
+    }
 #endif
 
     // ---- Hardware acceptance filtering ----

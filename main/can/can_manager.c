@@ -3,6 +3,7 @@
 #include "automation_manager.h"
 #include "dbc.h"
 #include "esp_log.h"
+#include "esp_system.h"
 #include "esp_timer.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/queue.h"
@@ -28,8 +29,13 @@
 static uint64_t s_last[DBC_HW_FILTER_BUS_COUNT][2048];
 static uint32_t s_seen[DBC_HW_FILTER_BUS_COUNT][2048 / 32];
 
-// Optional Wi-Fi sink: the same lines, UDP-broadcast on the joined network.
+// Runtime mode (NVS "disc"/"mode", set by the app; applied on reboot). Off =
+// normal build behaviour: HW filters, no Wi-Fi, no USB stream.
+static bool s_discovery;
+
+// Wi-Fi sink: the same lines, UDP to the hotspot (the gateway = the phone).
 static RingbufHandle_t s_udp_rb;
+static esp_netif_t *s_sta;
 
 static void wifi_reconnect(void *arg, esp_event_base_t base, int32_t id, void *data)
 {
@@ -41,19 +47,21 @@ static void wifi_reconnect(void *arg, esp_event_base_t base, int32_t id, void *d
 
 static void udp_task(void *arg)
 {
-    int sock = socket(AF_INET, SOCK_DGRAM, 0), on = 1;
-    setsockopt(sock, SOL_SOCKET, SO_BROADCAST, &on, sizeof(on));
+    int sock = socket(AF_INET, SOCK_DGRAM, 0);
     struct sockaddr_in dst = {
         .sin_family = AF_INET,
         .sin_port = htons(CONFIG_DASHKIT_DISCOVERY_UDP_PORT),
-        .sin_addr.s_addr = htonl(INADDR_BROADCAST),
     };
+    esp_netif_ip_info_t ip;
     size_t n;
     void *p;
     while (true) {
         vTaskDelay(pdMS_TO_TICKS(20));  // batch lines into ~1.4 KB datagrams
+        // Unicast to the gateway: no reliance on the hotspot passing broadcasts.
+        bool up = esp_netif_get_ip_info(s_sta, &ip) == ESP_OK && ip.gw.addr;
+        dst.sin_addr.s_addr = ip.gw.addr;
         while ((p = xRingbufferReceiveUpTo(s_udp_rb, &n, 0, 1400))) {
-            sendto(sock, p, n, 0, (struct sockaddr *)&dst, sizeof(dst));
+            if (up) sendto(sock, p, n, 0, (struct sockaddr *)&dst, sizeof(dst));
             vRingbufferReturnItem(s_udp_rb, p);
         }
     }
@@ -82,7 +90,7 @@ static void wifi_init(void)
     if (!s_udp_rb) return;
     esp_netif_init();
     esp_event_loop_create_default();
-    esp_netif_create_default_wifi_sta();
+    s_sta = esp_netif_create_default_wifi_sta();
     wifi_init_config_t cfg = WIFI_INIT_CONFIG_DEFAULT();
     cfg.nvs_enable = 0;  // credentials are ours; don't let the driver cache them
     if (esp_wifi_init(&cfg) != ESP_OK) return;
@@ -113,6 +121,32 @@ esp_err_t can_discovery_set_wifi(const char *ssid, const char *pass)
     nvs_close(h);
     if (err == ESP_OK) wifi_apply(ssid, pass);
     return err;
+}
+
+bool can_discovery_active(void)
+{
+    return s_discovery;
+}
+
+static void restart_cb(void *arg)
+{
+    esp_restart();
+}
+
+esp_err_t can_discovery_set_mode(bool on)
+{
+    nvs_handle_t h;
+    esp_err_t err = nvs_open("disc", NVS_READWRITE, &h);
+    if (err != ESP_OK) return err;
+    err = nvs_set_u8(h, "mode", on);
+    if (err == ESP_OK) err = nvs_commit(h);
+    nvs_close(h);
+    if (err != ESP_OK || on == s_discovery) return err;
+    // Filters and Wi-Fi are set up at boot: reboot after the BLE write is acked.
+    static esp_timer_handle_t t;
+    const esp_timer_create_args_t a = { .callback = restart_cb, .name = "disc_reboot" };
+    if (!t && esp_timer_create(&a, &t) != ESP_OK) return ESP_FAIL;
+    return esp_timer_start_once(t, 500 * 1000);
 }
 
 static bool in_dbc_set(uint8_t bus, uint32_t id)
@@ -177,7 +211,7 @@ static void on_frame_received(const can_tagged_frame_t *frame, void *user_ctx)
     // frames at all". This avoids holding onto a matching frame while we
     // wait through a flood of unrelated traffic.
 #ifdef CONFIG_DASHKIT_CAN_ACCEPT_ALL
-    if (!discovery_log(frame)) return;
+    if (s_discovery && !discovery_log(frame)) return;
 #endif
     if (!can_filter_should_forward(frame->bus_id, frame->frame.id)) return;
 
@@ -191,12 +225,22 @@ esp_err_t can_manager_init(void)
 {
     s_rx_queue = xQueueCreate(RX_QUEUE_DEPTH, sizeof(can_tagged_frame_t));
 #ifdef CONFIG_DASHKIT_CAN_ACCEPT_ALL
-    usb_serial_jtag_driver_config_t ucfg = USB_SERIAL_JTAG_DRIVER_CONFIG_DEFAULT();
-    ucfg.tx_buffer_size = 4096;
-    if (usb_serial_jtag_driver_install(&ucfg) == ESP_OK) {
-        usb_serial_jtag_vfs_use_driver();  // console logs share the driver, no interleaving
+    nvs_handle_t h;
+    uint8_t mode = 0;
+    if (nvs_open("disc", NVS_READONLY, &h) == ESP_OK) {
+        nvs_get_u8(h, "mode", &mode);
+        nvs_close(h);
     }
-    wifi_init();
+    s_discovery = mode;
+    if (s_discovery) {
+        ESP_LOGW(TAG, "CAN discovery mode: accept-all, USB + Wi-Fi stream");
+        usb_serial_jtag_driver_config_t ucfg = USB_SERIAL_JTAG_DRIVER_CONFIG_DEFAULT();
+        ucfg.tx_buffer_size = 4096;
+        if (usb_serial_jtag_driver_install(&ucfg) == ESP_OK) {
+            usb_serial_jtag_vfs_use_driver();  // console logs share the driver, no interleaving
+        }
+        wifi_init();
+    }
 #endif
     if (!s_rx_queue) {
         return ESP_ERR_NO_MEM;

@@ -117,6 +117,11 @@ static int app_cmd_access(uint16_t conn_handle, uint16_t attr_handle,
         memset(buf, 0, sizeof(buf));
         return rc;
     }
+    if (opcode == APP_CMD_DISCOVERY_MODE) {
+        if (len < 2 || buf[1] > 1) return BLE_ATT_ERR_INVALID_ATTR_VALUE_LEN;
+        ESP_LOGW(TAG, "discovery mode -> %u", buf[1]);
+        return can_discovery_set_mode(buf[1]) == ESP_OK ? 0 : BLE_ATT_ERR_UNLIKELY;
+    }
 #endif
 
 #if CONFIG_DASHKIT_TESLA_BLE

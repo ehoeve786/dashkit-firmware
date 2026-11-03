@@ -78,6 +78,7 @@ static void wifi_apply(const char *ssid, const char *pass)
     wifi_config_t wc = {0};
     strlcpy((char *)wc.sta.ssid, ssid, sizeof(wc.sta.ssid));
     strlcpy((char *)wc.sta.password, pass, sizeof(wc.sta.password));
+    wc.sta.sae_pwe_h2e = WPA3_SAE_PWE_BOTH;  // IDF default; {0} would mean hunt-and-peck only
     esp_wifi_set_config(WIFI_IF_STA, &wc);
     if (esp_wifi_start() == ESP_OK) esp_wifi_disconnect();  // reconnects with the new config
 }

@@ -85,6 +85,12 @@ typedef enum {
     VC_CMD_AC_SWING_INTENSITY = 0x4D,
     // Config only, not persisted. value is ignored.
     VC_CMD_AC_SWING_TOGGLE = 0x4E,
+    // One-shot driver vent position, held ~1 s: value = (positionY% << 8) | lateralSplit%,
+    // each 0-100, 0xFF = leave as is. Test/diagnostic for the vent mapping.
+    VC_CMD_VENT_SET = 0x4F,
+    // Config only, persisted in NVS. Which signal the swing moves: 0=LeftPositionX
+    // (original), 1=LeftLateralSplit (what the 2023 Model Y UI actually drives).
+    VC_CMD_AC_SWING_AXIS = 0x50,
 } vehicle_control_opcode_t;
 
 // Create the command queue and worker task. Call once at startup.

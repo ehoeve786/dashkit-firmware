@@ -13,6 +13,12 @@
 #include "driver/usb_serial_jtag.h"
 #include "driver/usb_serial_jtag_vfs.h"
 #include "dbc_generated.h"
+#include "esp_event.h"
+#include "esp_netif.h"
+#include "esp_wifi.h"
+#include "freertos/ringbuf.h"
+#include "freertos/task.h"
+#include "lwip/sockets.h"
 #include <stdio.h>
 
 // Discovery: every frame goes to USB as "ms,bus,id,data" (on payload change
@@ -20,6 +26,55 @@
 // Bus 0=chassis, 1=vehicle. Per-bus tables -> no race between the RX tasks.
 static uint64_t s_last[DBC_HW_FILTER_BUS_COUNT][2048];
 static uint32_t s_seen[DBC_HW_FILTER_BUS_COUNT][2048 / 32];
+
+// Optional Wi-Fi sink: the same lines, UDP-broadcast on the joined network.
+static RingbufHandle_t s_udp_rb;
+
+static void wifi_reconnect(void *arg, esp_event_base_t base, int32_t id, void *data)
+{
+    esp_wifi_connect();  // registered for STA_START and STA_DISCONNECTED only
+}
+
+static void udp_task(void *arg)
+{
+    int sock = socket(AF_INET, SOCK_DGRAM, 0), on = 1;
+    setsockopt(sock, SOL_SOCKET, SO_BROADCAST, &on, sizeof(on));
+    struct sockaddr_in dst = {
+        .sin_family = AF_INET,
+        .sin_port = htons(CONFIG_DASHKIT_DISCOVERY_UDP_PORT),
+        .sin_addr.s_addr = htonl(INADDR_BROADCAST),
+    };
+    size_t n;
+    void *p;
+    while (true) {
+        vTaskDelay(pdMS_TO_TICKS(20));  // batch lines into ~1.4 KB datagrams
+        while ((p = xRingbufferReceiveUpTo(s_udp_rb, &n, 0, 1400))) {
+            sendto(sock, p, n, 0, (struct sockaddr *)&dst, sizeof(dst));
+            vRingbufferReturnItem(s_udp_rb, p);
+        }
+    }
+}
+
+// Best effort: a Wi-Fi failure must never take the dashboard down.
+static void wifi_start(void)
+{
+    s_udp_rb = xRingbufferCreate(16384, RINGBUF_TYPE_BYTEBUF);
+    if (!s_udp_rb) return;
+    esp_netif_init();
+    esp_event_loop_create_default();
+    esp_netif_create_default_wifi_sta();
+    wifi_init_config_t cfg = WIFI_INIT_CONFIG_DEFAULT();
+    esp_wifi_init(&cfg);
+    esp_event_handler_register(WIFI_EVENT, WIFI_EVENT_STA_START, wifi_reconnect, NULL);
+    esp_event_handler_register(WIFI_EVENT, WIFI_EVENT_STA_DISCONNECTED, wifi_reconnect, NULL);
+    wifi_config_t wc = {0};
+    strlcpy((char *)wc.sta.ssid, CONFIG_DASHKIT_DISCOVERY_WIFI_SSID, sizeof(wc.sta.ssid));
+    strlcpy((char *)wc.sta.password, CONFIG_DASHKIT_DISCOVERY_WIFI_PASSWORD, sizeof(wc.sta.password));
+    esp_wifi_set_mode(WIFI_MODE_STA);
+    esp_wifi_set_config(WIFI_IF_STA, &wc);
+    esp_wifi_start();
+    xTaskCreate(udp_task, "disc_udp", 3072, NULL, 3, NULL);
+}
 
 static bool in_dbc_set(uint8_t bus, uint32_t id)
 {
@@ -52,6 +107,7 @@ static bool discovery_log(const can_tagged_frame_t *f)
         }
         line[len++] = '\n';
         usb_serial_jtag_write_bytes(line, len, 0);  // never block the RX task
+        if (s_udp_rb) xRingbufferSend(s_udp_rb, line, len, 0);
     }
     return in_dbc_set(b, id);
 }
@@ -97,10 +153,11 @@ esp_err_t can_manager_init(void)
     s_rx_queue = xQueueCreate(RX_QUEUE_DEPTH, sizeof(can_tagged_frame_t));
 #ifdef CONFIG_DASHKIT_CAN_ACCEPT_ALL
     usb_serial_jtag_driver_config_t ucfg = USB_SERIAL_JTAG_DRIVER_CONFIG_DEFAULT();
-    ucfg.tx_buffer_size = 16384;
+    ucfg.tx_buffer_size = 4096;
     if (usb_serial_jtag_driver_install(&ucfg) == ESP_OK) {
         usb_serial_jtag_vfs_use_driver();  // console logs share the driver, no interleaving
     }
+    if (CONFIG_DASHKIT_DISCOVERY_WIFI_SSID[0]) wifi_start();
 #endif
     if (!s_rx_queue) {
         return ESP_ERR_NO_MEM;

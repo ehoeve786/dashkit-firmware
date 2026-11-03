@@ -57,6 +57,11 @@ idf_component_register(
         bt
         esp_timer
         app_update
+        esp_wifi
+        esp_netif
+        esp_event
+        esp_ringbuf
+        lwip
         # Tesla vehicle-command protocol component (committed nanopb bindings +
         # crypto/session/protobuf-build). mbedtls is an explicit dependency of
         # the main component because the Tesla client drives the crypto layer.

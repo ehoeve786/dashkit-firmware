@@ -36,4 +36,24 @@ menu "DashKit"
             buses (on payload change) to USB-Serial-JTAG as ms,bus,id,data
             (bus 0=chassis, 1=vehicle). Only DBC IDs are forwarded to BLE,
             so the dashboard and OTA keep working.
+
+    config DASHKIT_DISCOVERY_WIFI_SSID
+        string "Discovery: Wi-Fi SSID (empty = USB only)"
+        depends on DASHKIT_CAN_ACCEPT_ALL
+        default ""
+        help
+            Also join this network and UDP-broadcast the discovery lines.
+            Set via menuconfig only (sdkconfig is gitignored); never put
+            credentials in sdkconfig.defaults.
+
+    config DASHKIT_DISCOVERY_WIFI_PASSWORD
+        string "Discovery: Wi-Fi password"
+        depends on DASHKIT_CAN_ACCEPT_ALL
+        default ""
+
+    config DASHKIT_DISCOVERY_UDP_PORT
+        int "Discovery: UDP broadcast port"
+        depends on DASHKIT_CAN_ACCEPT_ALL
+        range 1024 65535
+        default 4242
 endmenu

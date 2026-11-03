@@ -19,6 +19,7 @@
 #include "freertos/ringbuf.h"
 #include "freertos/task.h"
 #include "lwip/sockets.h"
+#include "nvs.h"
 #include <stdio.h>
 
 // Discovery: every frame goes to USB as "ms,bus,id,data" (on payload change
@@ -32,7 +33,10 @@ static RingbufHandle_t s_udp_rb;
 
 static void wifi_reconnect(void *arg, esp_event_base_t base, int32_t id, void *data)
 {
-    esp_wifi_connect();  // registered for STA_START and STA_DISCONNECTED only
+    // Registered for STA_START and STA_DISCONNECTED only. Back off on
+    // disconnect so a missing hotspot doesn't hog the radio BLE shares.
+    if (id == WIFI_EVENT_STA_DISCONNECTED) vTaskDelay(pdMS_TO_TICKS(3000));
+    esp_wifi_connect();  // harmless ESP_ERR_WIFI_NOT_STARTED after a stop
 }
 
 static void udp_task(void *arg)
@@ -55,8 +59,24 @@ static void udp_task(void *arg)
     }
 }
 
+// Apply credentials: empty SSID = Wi-Fi off. The Wi-Fi driver copies the
+// config, so nothing here outlives the call.
+static void wifi_apply(const char *ssid, const char *pass)
+{
+    if (!ssid[0]) {
+        esp_wifi_stop();
+        return;
+    }
+    wifi_config_t wc = {0};
+    strlcpy((char *)wc.sta.ssid, ssid, sizeof(wc.sta.ssid));
+    strlcpy((char *)wc.sta.password, pass, sizeof(wc.sta.password));
+    esp_wifi_set_config(WIFI_IF_STA, &wc);
+    if (esp_wifi_start() == ESP_OK) esp_wifi_disconnect();  // reconnects with the new config
+}
+
 // Best effort: a Wi-Fi failure must never take the dashboard down.
-static void wifi_start(void)
+// Credentials live in NVS ("disc"/"ssid","pass"), set by the app over BLE.
+static void wifi_init(void)
 {
     s_udp_rb = xRingbufferCreate(16384, RINGBUF_TYPE_BYTEBUF);
     if (!s_udp_rb) return;
@@ -64,16 +84,35 @@ static void wifi_start(void)
     esp_event_loop_create_default();
     esp_netif_create_default_wifi_sta();
     wifi_init_config_t cfg = WIFI_INIT_CONFIG_DEFAULT();
-    esp_wifi_init(&cfg);
+    cfg.nvs_enable = 0;  // credentials are ours; don't let the driver cache them
+    if (esp_wifi_init(&cfg) != ESP_OK) return;
     esp_event_handler_register(WIFI_EVENT, WIFI_EVENT_STA_START, wifi_reconnect, NULL);
     esp_event_handler_register(WIFI_EVENT, WIFI_EVENT_STA_DISCONNECTED, wifi_reconnect, NULL);
-    wifi_config_t wc = {0};
-    strlcpy((char *)wc.sta.ssid, CONFIG_DASHKIT_DISCOVERY_WIFI_SSID, sizeof(wc.sta.ssid));
-    strlcpy((char *)wc.sta.password, CONFIG_DASHKIT_DISCOVERY_WIFI_PASSWORD, sizeof(wc.sta.password));
     esp_wifi_set_mode(WIFI_MODE_STA);
-    esp_wifi_set_config(WIFI_IF_STA, &wc);
-    esp_wifi_start();
     xTaskCreate(udp_task, "disc_udp", 3072, NULL, 3, NULL);
+
+    char ssid[33] = "", pass[64] = "";
+    size_t n;
+    nvs_handle_t h;
+    if (nvs_open("disc", NVS_READONLY, &h) == ESP_OK) {
+        n = sizeof(ssid); nvs_get_str(h, "ssid", ssid, &n);
+        n = sizeof(pass); nvs_get_str(h, "pass", pass, &n);
+        nvs_close(h);
+    }
+    wifi_apply(ssid, pass);
+}
+
+esp_err_t can_discovery_set_wifi(const char *ssid, const char *pass)
+{
+    nvs_handle_t h;
+    esp_err_t err = nvs_open("disc", NVS_READWRITE, &h);
+    if (err != ESP_OK) return err;
+    err = nvs_set_str(h, "ssid", ssid);
+    if (err == ESP_OK) err = nvs_set_str(h, "pass", pass);
+    if (err == ESP_OK) err = nvs_commit(h);
+    nvs_close(h);
+    if (err == ESP_OK) wifi_apply(ssid, pass);
+    return err;
 }
 
 static bool in_dbc_set(uint8_t bus, uint32_t id)
@@ -157,7 +196,7 @@ esp_err_t can_manager_init(void)
     if (usb_serial_jtag_driver_install(&ucfg) == ESP_OK) {
         usb_serial_jtag_vfs_use_driver();  // console logs share the driver, no interleaving
     }
-    if (CONFIG_DASHKIT_DISCOVERY_WIFI_SSID[0]) wifi_start();
+    wifi_init();
 #endif
     if (!s_rx_queue) {
         return ESP_ERR_NO_MEM;

@@ -12,7 +12,33 @@
 
 #include <string.h>
 
+#ifdef CONFIG_DASHKIT_CAN_ACCEPT_ALL
+#include "can_manager.h"
+#endif
+
 static const char *TAG = "ble_appchan";
+
+#ifdef CONFIG_DASHKIT_CAN_ACCEPT_ALL
+
+static int app_wifi_set(const uint8_t *p, uint16_t len)
+{
+    uint8_t sl = p[1];
+    if (len < 3 || sl > 32 || 3 + sl > len) return BLE_ATT_ERR_INVALID_ATTR_VALUE_LEN;
+    uint8_t pl = p[2 + sl];
+    if (3 + sl + pl != len || (pl && (pl < 8 || pl > 63))) {
+        return BLE_ATT_ERR_INVALID_ATTR_VALUE_LEN;
+    }
+    char ssid[33], pass[64];
+    memcpy(ssid, &p[2], sl);
+    ssid[sl] = 0;
+    memcpy(pass, &p[3 + sl], pl);
+    pass[pl] = 0;
+    esp_err_t err = can_discovery_set_wifi(ssid, pass);
+    memset(pass, 0, sizeof(pass));
+    ESP_LOGI(TAG, "Wi-Fi %s (%s)", sl ? "set" : "cleared", esp_err_to_name(err));
+    return err == ESP_OK ? 0 : BLE_ATT_ERR_UNLIKELY;
+}
+#endif
 
 // DashPilot app-channel UUIDs (CADA02xx).
 // Service: CADA0200-...  Command (write): CADA0201-...  Status (notify): CADA0202-...
@@ -79,11 +105,19 @@ static int app_cmd_access(uint16_t conn_handle, uint16_t attr_handle,
         return BLE_ATT_ERR_INVALID_ATTR_VALUE_LEN;
     }
 
-    // Longest command is TESLA_CMD_PROVISION at 25 bytes; the rest are 3.
-    uint8_t buf[TESLA_PROVISION_LEN];
-    uint16_t copy_len = len < sizeof(buf) ? len : sizeof(buf);
-    os_mbuf_copydata(ctxt->om, 0, copy_len, buf);
+    // Longest command is APP_CMD_WIFI_SET (98 bytes); PROVISION is 25.
+    uint8_t buf[APP_WIFI_SET_MAX_LEN];
+    if (len > sizeof(buf)) return BLE_ATT_ERR_INVALID_ATTR_VALUE_LEN;
+    os_mbuf_copydata(ctxt->om, 0, len, buf);
     uint8_t opcode = buf[0];
+
+#ifdef CONFIG_DASHKIT_CAN_ACCEPT_ALL
+    if (opcode == APP_CMD_WIFI_SET) {
+        int rc = app_wifi_set(buf, len);
+        memset(buf, 0, sizeof(buf));
+        return rc;
+    }
+#endif
 
 #if CONFIG_DASHKIT_TESLA_BLE
     esp_err_t err;

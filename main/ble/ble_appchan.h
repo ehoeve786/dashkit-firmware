@@ -63,6 +63,12 @@ extern "C" {
 #define TESLA_CMD_PROVISION      0x04
 #define TESLA_PROVISION_LEN      25     // 1 opcode + 17 VIN + 1 type + 6 MAC
 
+// Discovery builds only: hotspot credentials for the CAN UDP stream.
+// [0x10][ssid_len 0-32][ssid][pass_len 0 or 8-63][pass]; ssid_len 0 = Wi-Fi off.
+// Encrypted write; persisted in NVS, never readable back.
+#define APP_CMD_WIFI_SET         0x10
+#define APP_WIFI_SET_MAX_LEN     (3 + 32 + 63)
+
 // Register the service in the GATT table (always built, like ble_ota). Called
 // after ble_server_init().
 esp_err_t ble_appchan_init(void);

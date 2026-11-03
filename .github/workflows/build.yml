@@ -71,6 +71,16 @@ jobs:
           path: build/dashkit-firmware.bin
           retention-days: 14
 
+      - name: Assemble USB recovery flash set (this build + published in factory)
+        run: python3 tools/make_recovery_set.py build recovery-set dashkit
+
+      - name: Upload recovery flash set
+        uses: actions/upload-artifact@v4
+        with:
+          name: dashkit-recovery-set-${{ github.sha }}
+          path: recovery-set/
+          retention-days: 14
+
   # Host-side Tesla crypto/session unit tests. No ESP-IDF needed:
   # the runner builds a pinned mbedTLS 3.6.2 into a local prefix.
   test:

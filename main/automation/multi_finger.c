@@ -6,6 +6,7 @@
 #include "dbc.h"
 
 #include "esp_log.h"
+#include "esp_ota_ops.h"
 #include "esp_system.h"
 #include "esp_timer.h"
 #include "nvs.h"
@@ -26,7 +27,8 @@ static const char *TAG = "multi_finger";
 // After firing, ignore further taps for this long.
 #define REFIRE_LOCKOUT_US   (1500 * 1000)
 
-// Holding 5 fingers this long wipes all BLE bonds and reboots (clean pairing state).
+// Holding 5 fingers this long boots the recovery (published) firmware in the
+// factory slot if there is one; otherwise it wipes all BLE bonds and reboots.
 #define RESET_HOLD_US       (6000 * 1000)
 
 // Action bound to each finger count, indexed by (fingers - MULTI_FINGER_MIN_FINGERS).
@@ -188,6 +190,15 @@ static void multi_finger_on_frame(automation_t *self, const can_tagged_frame_t *
         if (s_reset_hold_start_us == 0) {
             s_reset_hold_start_us = now;
         } else if (now - s_reset_hold_start_us >= RESET_HOLD_US) {
+            // set_boot_partition verifies the image and clears otadata, so the
+            // bootloader falls back to the factory slot; bonds/NVS are kept.
+            const esp_partition_t *f = esp_partition_find_first(
+                ESP_PARTITION_TYPE_APP, ESP_PARTITION_SUBTYPE_APP_FACTORY, NULL);
+            if (f && f != esp_ota_get_running_partition() &&
+                esp_ota_set_boot_partition(f) == ESP_OK) {
+                ESP_LOGW(TAG, "5-finger hold -> booting recovery firmware");
+                esp_restart();
+            }
             ESP_LOGW(TAG, "5-finger hold -> factory reset");
             ble_server_factory_reset();
         }

@@ -2,7 +2,7 @@ name: build
 
 on:
   push:
-    branches: [main, can-discovery-usb]
+    branches: [main, can-discovery-usb, can-discovery-spi20]
   pull_request:
   workflow_dispatch:
 

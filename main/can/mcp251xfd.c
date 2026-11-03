@@ -131,7 +131,7 @@ static esp_err_t spi_write_reg(mcp251xfd_ctx_t *ctx, uint16_t addr, const uint8_
     t.tx_buffer = buf;
 
     xSemaphoreTake(ctx->spi_mutex, portMAX_DELAY);
-    esp_err_t err = spi_device_transmit(ctx->spi_dev, &t);
+    esp_err_t err = spi_device_polling_transmit(ctx->spi_dev, &t);
     xSemaphoreGive(ctx->spi_mutex);
     return err;
 }
@@ -154,7 +154,7 @@ static esp_err_t spi_read_reg(mcp251xfd_ctx_t *ctx, uint16_t addr, uint8_t *data
     };
 
     xSemaphoreTake(ctx->spi_mutex, portMAX_DELAY);
-    esp_err_t err = spi_device_transmit(ctx->spi_dev, &t);
+    esp_err_t err = spi_device_polling_transmit(ctx->spi_dev, &t);
     xSemaphoreGive(ctx->spi_mutex);
     if (err == ESP_OK) {
         memcpy(data, rx_buf + 2, len);
@@ -360,9 +360,11 @@ static void IRAM_ATTR gpio_isr_handler(void *arg)
 static void read_rx_fifo(mcp251xfd_ctx_t *ctx)
 {
     while (true) {
-        // Check FIFO 1 status
-        uint32_t fifosta;
-        read_reg32(ctx, REG_C1FIFOSTA(1), &fifosta);
+        // FIFO 1 status + user address are adjacent: one 8-byte read.
+        uint8_t su[8];
+        if (spi_read_reg(ctx, REG_C1FIFOSTA(1), su, sizeof(su)) != ESP_OK) break;
+        uint32_t fifosta = su[0] | (su[1] << 8) | (su[2] << 16) | ((uint32_t)su[3] << 24);
+        uint32_t ua = su[4] | (su[5] << 8) | (su[6] << 16) | ((uint32_t)su[7] << 24);
 
         // Overflow is sticky: a frame was dropped because the FIFO filled up.
         // Count it and clear the flag (write 0 to RXOVIF, preserving the rest).
@@ -375,10 +377,6 @@ static void read_rx_fifo(mcp251xfd_ctx_t *ctx)
         if (!(fifosta & FIFOSTA_TFNRFNIF)) {
             break;  // FIFO empty
         }
-
-        // Get user address (RAM offset of next message)
-        uint32_t ua;
-        read_reg32(ctx, REG_C1FIFOUA(1), &ua);
 
         // Read message object from RAM (8 + 8 bytes for header + data)
         uint8_t msg[16];
@@ -414,11 +412,10 @@ static void read_rx_fifo(mcp251xfd_ctx_t *ctx)
             memcpy(tagged.frame.data, &msg[8], data_len);
         }
 
-        // Increment FIFO head pointer
-        uint32_t fifocon;
-        read_reg32(ctx, REG_C1FIFOCON(1), &fifocon);
-        fifocon |= FIFOCON_UINC;
-        write_reg32(ctx, REG_C1FIFOCON(1), fifocon);
+        // Increment FIFO head: single-byte write to FIFOCON[15:8]; UINC is bit 0
+        // there and the byte's other bits (TXREQ, FRESET) are no-ops at 0.
+        uint8_t uinc = FIFOCON_UINC >> 8;
+        spi_write_reg(ctx, REG_C1FIFOCON(1) + 1, &uinc, 1);
 
         // Deliver frame via callback
         if (ctx->rx_cb) {

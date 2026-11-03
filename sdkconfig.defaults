@@ -70,7 +70,3 @@ CONFIG_ESPTOOLPY_FLASHSIZE_16MB=y
 
 # CONFIG_DASHKIT_DEBUG_LOG=y
 CONFIG_DASHKIT_CAN_ACCEPT_ALL=y
-
-# Discovery Wi-Fi: join WPA2/WPA3-transition hotspots (e.g. Samsung) over WPA2;
-# the ESP32 SAE handshake with Android hotspots is unreliable.
-CONFIG_ESP_WIFI_ENABLE_WPA3_SAE=n

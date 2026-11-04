@@ -10,6 +10,8 @@
 #include <stdbool.h>
 #include <string.h>
 
+static const char *TAG = "can_mgr";
+
 #ifdef CONFIG_DASHKIT_CAN_ACCEPT_ALL
 #include "driver/usb_serial_jtag.h"
 #include "driver/usb_serial_jtag_vfs.h"
@@ -41,9 +43,17 @@ static volatile uint32_t s_udp_drops;  // lines dropped on the DashKit (Wi-Fi qu
 
 static void wifi_reconnect(void *arg, esp_event_base_t base, int32_t id, void *data)
 {
-    // Registered for STA_START and STA_DISCONNECTED only. Back off on
-    // disconnect so a missing hotspot doesn't hog the radio BLE shares.
-    if (id == WIFI_EVENT_STA_DISCONNECTED) vTaskDelay(pdMS_TO_TICKS(3000));
+    // Registered for STA_START, STA_DISCONNECTED and IP_EVENT_STA_GOT_IP.
+    if (base == IP_EVENT) {
+        ESP_LOGW(TAG, "Wi-Fi up, IP " IPSTR, IP2STR(&((ip_event_got_ip_t *)data)->ip_info.ip));
+        return;
+    }
+    // Back off on disconnect so a missing hotspot doesn't hog the radio BLE shares.
+    // Reason codes: 201 = no AP found (wrong SSID/band), 15/204 = handshake (password).
+    if (id == WIFI_EVENT_STA_DISCONNECTED) {
+        ESP_LOGW(TAG, "Wi-Fi disconnected, reason %u", ((wifi_event_sta_disconnected_t *)data)->reason);
+        vTaskDelay(pdMS_TO_TICKS(3000));
+    }
     esp_wifi_connect();  // harmless ESP_ERR_WIFI_NOT_STARTED after a stop
 }
 
@@ -124,6 +134,7 @@ static void wifi_init(void)
     if (esp_wifi_init(&cfg) != ESP_OK) return;
     esp_event_handler_register(WIFI_EVENT, WIFI_EVENT_STA_START, wifi_reconnect, NULL);
     esp_event_handler_register(WIFI_EVENT, WIFI_EVENT_STA_DISCONNECTED, wifi_reconnect, NULL);
+    esp_event_handler_register(IP_EVENT, IP_EVENT_STA_GOT_IP, wifi_reconnect, NULL);
     esp_wifi_set_mode(WIFI_MODE_STA);
     xTaskCreate(udp_task, "disc_udp", 3072, NULL, 3, NULL);
 
@@ -214,7 +225,6 @@ static bool discovery_log(const can_tagged_frame_t *f)
 }
 #endif
 
-static const char *TAG = "can_mgr";
 
 // Sized to absorb a few hundred ms of CAN traffic if BLE briefly stalls.
 // At ~335 fps (realistic Tesla rates) this is ~750ms of headroom.
@@ -265,7 +275,10 @@ esp_err_t can_manager_init(void)
         usb_serial_jtag_driver_config_t ucfg = USB_SERIAL_JTAG_DRIVER_CONFIG_DEFAULT();
         ucfg.tx_buffer_size = 4096;
         if (usb_serial_jtag_driver_install(&ucfg) == ESP_OK) {
-            usb_serial_jtag_vfs_use_driver();  // console logs share the driver, no interleaving
+            usb_serial_jtag_vfs_use_driver();  // console logs share the driver
+            // One write per log line, so frame lines (written whole from the RX
+            // tasks) can't land in the middle of one.
+            setvbuf(stdout, NULL, _IOLBF, 256);
         }
         wifi_init();
     }

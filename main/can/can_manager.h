@@ -12,8 +12,8 @@ esp_err_t can_manager_init(void);
 #ifdef CONFIG_DASHKIT_CAN_ACCEPT_ALL
 // Persist hotspot credentials (NVS) and (re)connect; empty ssid = Wi-Fi off.
 esp_err_t can_discovery_set_wifi(const char *ssid, const char *pass);
-// Persist discovery mode and reboot into it if it changed.
-esp_err_t can_discovery_set_mode(bool on);
+// Persist discovery mode (0 off, 1 USB + Wi-Fi, 2 USB only); reboots if it changed.
+esp_err_t can_discovery_set_mode(uint8_t mode);
 // Discovery mode active this boot (valid after can_manager_init()).
 bool can_discovery_active(void);
 #endif

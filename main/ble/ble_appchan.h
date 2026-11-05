@@ -68,7 +68,7 @@ extern "C" {
 // Encrypted write; persisted in NVS, never readable back.
 #define APP_CMD_WIFI_SET         0x10
 #define APP_WIFI_SET_MAX_LEN     (3 + 32 + 63)
-// [0x11][0|1]: CAN discovery mode off/on; persisted, DashKit reboots on change.
+// [0x11][mode]: CAN discovery 0 = off, 1 = USB + Wi-Fi, 2 = USB only; persisted, reboots on change.
 #define APP_CMD_DISCOVERY_MODE   0x11
 
 // Register the service in the GATT table (always built, like ble_ota). Called

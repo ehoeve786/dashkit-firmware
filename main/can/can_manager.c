@@ -35,6 +35,7 @@ static uint32_t s_seen[DBC_HW_FILTER_BUS_COUNT][2048 / 32];
 // Runtime mode (NVS "disc"/"mode", set by the app; applied on reboot). Off =
 // normal build behaviour: HW filters, no Wi-Fi, no USB stream.
 static bool s_discovery;
+static uint8_t s_mode;  // 0 off, 1 USB + Wi-Fi, 2 USB only
 
 // Wi-Fi sink: the same lines, UDP to the hotspot (the gateway = the phone).
 static RingbufHandle_t s_udp_rb;
@@ -172,15 +173,15 @@ static void restart_cb(void *arg)
     esp_restart();
 }
 
-esp_err_t can_discovery_set_mode(bool on)
+esp_err_t can_discovery_set_mode(uint8_t mode)
 {
     nvs_handle_t h;
     esp_err_t err = nvs_open("disc", NVS_READWRITE, &h);
     if (err != ESP_OK) return err;
-    err = nvs_set_u8(h, "mode", on);
+    err = nvs_set_u8(h, "mode", mode);
     if (err == ESP_OK) err = nvs_commit(h);
     nvs_close(h);
-    if (err != ESP_OK || on == s_discovery) return err;
+    if (err != ESP_OK || mode == s_mode) return err;
     // Filters and Wi-Fi are set up at boot: reboot after the BLE write is acked.
     static esp_timer_handle_t t;
     const esp_timer_create_args_t a = { .callback = restart_cb, .name = "disc_reboot" };
@@ -269,9 +270,10 @@ esp_err_t can_manager_init(void)
         nvs_get_u8(h, "mode", &mode);
         nvs_close(h);
     }
-    s_discovery = mode;
+    s_mode = mode;
+    s_discovery = mode != 0;
     if (s_discovery) {
-        ESP_LOGW(TAG, "CAN discovery mode: accept-all, USB + Wi-Fi stream");
+        ESP_LOGW(TAG, "CAN discovery mode %u: accept-all, USB%s stream", mode, mode == 2 ? "" : " + Wi-Fi");
         usb_serial_jtag_driver_config_t ucfg = USB_SERIAL_JTAG_DRIVER_CONFIG_DEFAULT();
         ucfg.tx_buffer_size = 4096;
         if (usb_serial_jtag_driver_install(&ucfg) == ESP_OK) {
@@ -280,7 +282,7 @@ esp_err_t can_manager_init(void)
             // tasks) can't land in the middle of one.
             setvbuf(stdout, NULL, _IOLBF, 256);
         }
-        wifi_init();
+        if (mode != 2) wifi_init();  // 2 = USB only: saved hotspot kept, Wi-Fi off
     }
 #endif
     if (!s_rx_queue) {

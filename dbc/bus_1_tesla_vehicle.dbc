@@ -1530,6 +1530,7 @@ BO_ 777 DAS_object: 8 CH
  SG_ DAS_cutinVehHeading m5: 56|8@1+ (0.0245437,-3.14159) [0|0] "rad" X
 
 BO_ 921 DAS_status: 8 CH
+ SG_ DAS_lssState: 29|3@1+ (1,0) [0|0] "" X
  SG_ DAS_autoLaneChangeState: 46|5@1+ (1,0) [0|0] "" X
  SG_ DAS_autoParked: 25|1@1+ (1,0) [0|0] "" X
  SG_ DAS_autoparkReady: 24|1@1+ (1,0) [0|0] "" X
@@ -1563,7 +1564,6 @@ BO_ 905 DAS_status2: 8 CH
  SG_ DAS_activationFailureStatus: 14|2@1+ (1,0) [0|0] "" X
  SG_ DAS_driverInteractionLevel: 38|2@1+ (1,0) [0|0] "" X
  SG_ DAS_longCollisionWarning: 48|4@1+ (1,0) [0|0] "" X
- SG_ DAS_lssState: 31|3@1+ (1,0) [0|0] "" X
  SG_ DAS_pmmCameraFaultReason: 24|2@1+ (1,0) [0|0] "" X
  SG_ DAS_pmmLoggingRequest: 13|1@1+ (1,0) [0|0] "" X
  SG_ DAS_pmmObstacleSeverity: 10|3@1+ (1,0) [0|0] "" X
@@ -10263,7 +10263,7 @@ VAL_ 905 DAS_accSpeedLimit 0 "NONE" 1023 "SNA";
 VAL_ 905 DAS_activationFailureStatus 0 "IDLE" 1 "FAILED_1" 2 "FAILED_2";
 VAL_ 905 DAS_driverInteractionLevel 0 "DRIVER_INTERACTING" 1 "DRIVER_NOT_INTERACTING" 2 "CONTINUED_DRIVER_NOT_INTERACTING";
 VAL_ 905 DAS_longCollisionWarning 0 "NONE" 1 "VEHICLE_UNKNOWN" 2 "PEDESTRIAN" 3 "IPSO" 4 "STOPSIGN_STOPLINE" 5 "TFL_STOPLINE" 6 "VEHICLE_CIPV" 7 "VEHICLE_CUTIN" 8 "VEHICLE_MCVL" 9 "VEHICLE_MCVL2" 10 "VEHICLE_MCVR" 11 "VEHICLE_MCVR2" 12 "VEHICLE_CIPV2" 15 "SNA";
-VAL_ 905 DAS_lssState 0 "FAULT" 1 "LDW" 2 "LKA" 3 "ELK" 4 "MONITOR" 5 "BLINDSPOT" 6 "ABORT" 7 "OFF";
+VAL_ 921 DAS_lssState 0 "FAULT" 1 "LDW" 2 "LKA" 3 "ELK" 4 "MONITOR" 5 "BLINDSPOT" 6 "ABORT" 7 "OFF";
 VAL_ 905 DAS_pmmCameraFaultReason 0 "NO_FAULT" 1 "BLOCKED_FRONT" 2 "INVALID_MIA";
 VAL_ 905 DAS_pmmLoggingRequest 0 "FALSE" 1 "TRUE";
 VAL_ 905 DAS_pmmObstacleSeverity 0 "NONE" 1 "IMMINENT_REAR" 2 "IMMINENT_FRONT" 3 "BRAKE_REQUEST" 4 "CRASH_REAR" 5 "CRASH_FRONT" 6 "ACCEL_LIMIT" 7 "SNA";

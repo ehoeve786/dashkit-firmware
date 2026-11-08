@@ -116,8 +116,9 @@ static void wiper_off_on_frame(automation_t *self, const can_tagged_frame_t *fra
     if (s_armed) {
         s_armed = false;
         double lss;
-        bool adas_on = can_get(0, "DAS_status2", "DAS_lssState", &lss, false) == ESP_OK
-                       && lss >= 2.0;
+        // DAS_lssState: 2 LKA .. 5 BLINDSPOT = lane support active (7 = OFF when parked)
+        bool adas_on = can_get(0, "DAS_status", "DAS_lssState", &lss, false) == ESP_OK
+                       && lss >= 2.0 && lss <= 5.0;
         if (s_enabled && adas_on) {
             ESP_LOGW(TAG, "DAS_wiperSpeed OFF->AUTO with ADAS on, triggering");
             xTaskCreatePinnedToCore(wiper_off_seq_task, "wiper_off", 4096, NULL, 5, NULL, 0);

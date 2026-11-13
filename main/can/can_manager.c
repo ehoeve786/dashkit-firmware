@@ -8,6 +8,7 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/queue.h"
 #include "freertos/task.h"
+#include "driver/usb_serial_jtag.h"
 #include <stdio.h>
 #include <stdbool.h>
 #include <string.h>
@@ -22,9 +23,10 @@ static can_interface_t *s_interfaces[CAN_MANAGER_MAX_INTERFACES];
 static int              s_iface_count = 0;
 static QueueHandle_t    s_rx_queue = NULL;
 
-// DAS_lanes (0x239, chassis bus 0) goes out on the console (USB serial to the comma 3X)
-// as "L,<ms>,<hex>". The CAN RX path only overwrites a 1-slot mailbox; the console
-// write (can stall up to 50 ms once when no host reads) runs in its own task.
+// DAS_lanes (0x239, chassis bus 0) goes out on the USB serial port (to the comma 3X) as "L,<ms>,<hex>".
+// The USB-Serial-JTAG driver (not the log console: its no-driver path can wedge for good when the host drops
+// mid-line) owns the port; writes never block and are dropped while no host reads. Host input is read and
+// discarded so it can't back up. The CAN RX path only overwrites a 1-slot mailbox drained by this task.
 #define LANES_ID 0x239
 static QueueHandle_t    s_lanes_q = NULL;
 
@@ -33,10 +35,12 @@ static void lanes_task(void *arg)
     can_frame_t f;
     char b[48];
     for (;;) {
-        if (xQueueReceive(s_lanes_q, &f, portMAX_DELAY) != pdTRUE) continue;
+        while (usb_serial_jtag_read_bytes(b, sizeof(b), 0) > 0) {}
+        if (xQueueReceive(s_lanes_q, &f, pdMS_TO_TICKS(100)) != pdTRUE) continue;
         int n = snprintf(b, sizeof(b), "L,%lu,", (unsigned long)(esp_timer_get_time() / 1000));
         for (int i = 0; i < f.dlc && i < 8; i++) n += snprintf(b + n, sizeof(b) - n, "%02x", f.data[i]);
-        puts(b);
+        b[n++] = '\n';
+        usb_serial_jtag_write_bytes(b, n, 0);
     }
 }
 
@@ -72,8 +76,9 @@ esp_err_t can_manager_init(void)
     if (!s_rx_queue) {
         return ESP_ERR_NO_MEM;
     }
+    usb_serial_jtag_driver_config_t usj = { .tx_buffer_size = 1024, .rx_buffer_size = 256 };
     s_lanes_q = xQueueCreate(1, sizeof(can_frame_t));
-    if (!s_lanes_q || xTaskCreate(lanes_task, "lanes", 3072, NULL, 1, NULL) != pdPASS) {
+    if (!s_lanes_q || usb_serial_jtag_driver_install(&usj) != ESP_OK || xTaskCreate(lanes_task, "lanes", 3072, NULL, 1, NULL) != pdPASS) {
         return ESP_ERR_NO_MEM;
     }
     s_iface_count = 0;

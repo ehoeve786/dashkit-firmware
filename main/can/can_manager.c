@@ -23,19 +23,47 @@ static can_interface_t *s_interfaces[CAN_MANAGER_MAX_INTERFACES];
 static int              s_iface_count = 0;
 static QueueHandle_t    s_rx_queue = NULL;
 
-// DAS_lanes (0x239, chassis bus 0) goes out on the USB serial port (to the comma 3X) as "L,<ms>,<hex>".
-// The USB-Serial-JTAG driver (not the log console: its no-driver path can wedge for good when the host drops
-// mid-line) owns the port; writes never block and are dropped while no host reads. Host input is read and
-// discarded so it can't back up. The CAN RX path only overwrites a 1-slot mailbox drained by this task.
+// USB serial link with the comma 3X (USB-Serial-JTAG driver, not the log console: its no-driver path can wedge
+// for good when the host drops mid-line). Writes never block and are dropped while no host reads.
+//  out: DAS_lanes (0x239, chassis bus 0) as "L,<ms>,<hex>"; the CAN RX path only overwrites a 1-slot mailbox.
+//  in:  "C,7f0,<16 hex>" = openpilot state (COMMA_status), injected for the app as bus 1 frame 0x7F0 (never sent
+//       on CAN; only that id is accepted). No status for 1 s (C3X off or unplugged): one all-zero frame clears it.
 #define LANES_ID 0x239
+#define COMMA_ID 0x7F0
 static QueueHandle_t    s_lanes_q = NULL;
+
+static void comma_inject(uint64_t v)
+{
+    can_tagged_frame_t t = { .bus_id = 1, .frame = { .id = COMMA_ID, .dlc = 8 } };
+    for (int i = 0; i < 8; i++) t.frame.data[i] = v >> (56 - 8 * i);
+    can_manager_inject(&t);
+}
 
 static void lanes_task(void *arg)
 {
     can_frame_t f;
-    char b[48];
+    char b[48], in[48];
+    int il = 0;
+    int64_t last_c = 0;
     for (;;) {
-        while (usb_serial_jtag_read_bytes(b, sizeof(b), 0) > 0) {}
+        int r;
+        while ((r = usb_serial_jtag_read_bytes(b, sizeof(b), 0)) > 0) {
+            for (int i = 0; i < r; i++) {
+                if (b[i] != '\n') { if (il < (int)sizeof(in) - 1) in[il++] = b[i]; continue; }
+                in[il] = 0;
+                unsigned long id;
+                unsigned long long v;
+                if (sscanf(in, "C,%lx,%16llx", &id, &v) == 2 && id == COMMA_ID) {
+                    comma_inject(v);
+                    last_c = esp_timer_get_time();
+                }
+                il = 0;
+            }
+        }
+        if (last_c && esp_timer_get_time() - last_c > 1000000) {
+            comma_inject(0);
+            last_c = 0;
+        }
         if (xQueueReceive(s_lanes_q, &f, pdMS_TO_TICKS(100)) != pdTRUE) continue;
         int n = snprintf(b, sizeof(b), "L,%lu,", (unsigned long)(esp_timer_get_time() / 1000));
         for (int i = 0; i < f.dlc && i < 8; i++) n += snprintf(b + n, sizeof(b) - n, "%02x", f.data[i]);

@@ -1386,6 +1386,15 @@ BO_ 669 CP_dcChargeStatus: 4 VEH
  SG_ CP_evseOutputDcCurrentStale : 29|1@1+ (1,0) [0|1] "" X
  SG_ CP_evseOutputDcVoltage : 16|13@1+ (0.0732422,0) [0|599.927] "V" X
 
+BO_ 1497 DAS_carLog: 8 CH
+ SG_ DAS_carLogMultiplexer M : 0|4@1+ (1,0) [0|15] "" X
+
+BO_ 760 UI_mapSpeedCH: 8 CH
+ SG_ UI_mppSpeedLimit : 48|5@1+ (5,0) [0|155] "kph/mph" X
+
+BO_ 843 APP_frontParkAssistData: 6 CH
+ SG_ APP_frontMiddleParkAssist : 16|8@1+ (2,0) [0|510] "cm" X
+
 BO_ 583 DAS_autopilotDebug: 8 VEH
  SG_ DAS_autopilotAbortReason: 32|8@1+ (1,0) [0|255] "" X
  SG_ DAS_behaviorReport: 16|6@1+ (1,0) [0|43] "" X

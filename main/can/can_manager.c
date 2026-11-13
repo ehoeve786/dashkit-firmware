@@ -25,12 +25,13 @@ static QueueHandle_t    s_rx_queue = NULL;
 
 // USB serial link with the comma 3X (USB-Serial-JTAG driver, not the log console: its no-driver path can wedge
 // for good when the host drops mid-line). Writes never block and are dropped while no host reads.
-//  out: DAS_lanes (0x239, chassis bus 0) as "L,<ms>,<hex>"; the CAN RX path only overwrites a 1-slot mailbox.
+//  out: chassis-bus (0) frames the C3X can't see, as "F,<id>,<hex>": DAS_lanes 0x239, DAS_carLog 0x5D9,
+//       DAS_autopilotDebug 0x247, UI_gpsVehicleSpeed 0x2F8, APP_frontParkAssistData 0x34B (~35 frames/s). The CAN
+//       RX path only queues them (never blocks; dropped if 16 are already waiting).
 //  in:  "C,7f0,<16 hex>" = openpilot state (COMMA_status), injected for the app as bus 1 frame 0x7F0 (never sent
 //       on CAN; only that id is accepted). No status for 1 s (C3X off or unplugged): one all-zero frame clears it.
-#define LANES_ID 0x239
 #define COMMA_ID 0x7F0
-static QueueHandle_t    s_lanes_q = NULL;
+static QueueHandle_t    s_c3x_q = NULL;
 
 static void comma_inject(uint64_t v)
 {
@@ -64,8 +65,8 @@ static void lanes_task(void *arg)
             comma_inject(0);
             last_c = 0;
         }
-        if (xQueueReceive(s_lanes_q, &f, pdMS_TO_TICKS(100)) != pdTRUE) continue;
-        int n = snprintf(b, sizeof(b), "L,%lu,", (unsigned long)(esp_timer_get_time() / 1000));
+        if (xQueueReceive(s_c3x_q, &f, pdMS_TO_TICKS(100)) != pdTRUE) continue;
+        int n = snprintf(b, sizeof(b), "F,%03lx,", (unsigned long)f.id);
         for (int i = 0; i < f.dlc && i < 8; i++) n += snprintf(b + n, sizeof(b) - n, "%02x", f.data[i]);
         b[n++] = '\n';
         usb_serial_jtag_write_bytes(b, n, 0);
@@ -83,8 +84,11 @@ static void on_frame_received(const can_tagged_frame_t *frame, void *user_ctx)
     // Automations run before the BLE filter so they see all raw traffic.
     automation_manager_on_frame(frame);
     vehicle_control_on_frame(frame);
-    if (frame->bus_id == 0 && frame->frame.id == LANES_ID && !frame->frame.extended) {
-        xQueueOverwrite(s_lanes_q, &frame->frame);
+    if (frame->bus_id == 0 && !frame->frame.extended) {
+        switch (frame->frame.id) {
+        case 0x239: case 0x5D9: case 0x247: case 0x2F8: case 0x34B:
+            xQueueSend(s_c3x_q, &frame->frame, 0);
+        }
     }
     // Drop non-matching frames at the source so the bridge task's batching
     // timeout reflects "no more *matching* frames" rather than "no more
@@ -105,8 +109,8 @@ esp_err_t can_manager_init(void)
         return ESP_ERR_NO_MEM;
     }
     usb_serial_jtag_driver_config_t usj = { .tx_buffer_size = 1024, .rx_buffer_size = 256 };
-    s_lanes_q = xQueueCreate(1, sizeof(can_frame_t));
-    if (!s_lanes_q || usb_serial_jtag_driver_install(&usj) != ESP_OK || xTaskCreate(lanes_task, "lanes", 3072, NULL, 1, NULL) != pdPASS) {
+    s_c3x_q = xQueueCreate(16, sizeof(can_frame_t));
+    if (!s_c3x_q || usb_serial_jtag_driver_install(&usj) != ESP_OK || xTaskCreate(lanes_task, "lanes", 3072, NULL, 1, NULL) != pdPASS) {
         return ESP_ERR_NO_MEM;
     }
     s_iface_count = 0;

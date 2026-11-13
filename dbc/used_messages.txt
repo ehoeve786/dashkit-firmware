@@ -42,7 +42,11 @@ DI_speed                  0 decode  # app: speed; door unlatch: DI_vehicleSpeed 
 DAS_status                0 decode  # app: blind spot / speed limit / lane+collision warn; wiper-off gate reads DAS_lssState
 DAS_status2               0 filter  # app: ADAS state
 DAS_road                  0 filter  # app: traffic light color / stop line dist
-DAS_lanes                 0 filter  # comma 3X: lane-exists flags + virtual lane, streamed over USB serial
+DAS_lanes                 0 filter  # comma 3X (USB): lane flags + Tesla lane-centre path
+DAS_carLog                0 filter  # comma 3X (USB): lead / second lead / adjacent-lane cars (muxed, 333 ms)
+DAS_autopilotDebug        0 filter  # comma 3X (USB): fork state, construction zone, lane-change state
+UI_mapSpeedCH             0 filter  # comma 3X (USB): UI_gpsVehicleSpeed 0x2F8 (name taken by 0x3D9 here): map speed limit
+APP_frontParkAssistData   0 filter  # comma 3X (USB): front distances at low speed
 
 # ---- App-forwarded messages on the vehicle bus (bus 1) ----
 VCLEFT_lightStatus        1 filter  # app: left turn signal

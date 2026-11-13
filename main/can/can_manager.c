@@ -7,6 +7,8 @@
 #include "esp_timer.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/queue.h"
+#include "freertos/task.h"
+#include <stdio.h>
 #include <stdbool.h>
 #include <string.h>
 
@@ -20,6 +22,24 @@ static can_interface_t *s_interfaces[CAN_MANAGER_MAX_INTERFACES];
 static int              s_iface_count = 0;
 static QueueHandle_t    s_rx_queue = NULL;
 
+// DAS_lanes (0x239, chassis bus 0) goes out on the console (USB serial to the comma 3X)
+// as "L,<ms>,<hex>". The CAN RX path only overwrites a 1-slot mailbox; the console
+// write (can stall up to 50 ms once when no host reads) runs in its own task.
+#define LANES_ID 0x239
+static QueueHandle_t    s_lanes_q = NULL;
+
+static void lanes_task(void *arg)
+{
+    can_frame_t f;
+    char b[48];
+    for (;;) {
+        if (xQueueReceive(s_lanes_q, &f, portMAX_DELAY) != pdTRUE) continue;
+        int n = snprintf(b, sizeof(b), "L,%lu,", (unsigned long)(esp_timer_get_time() / 1000));
+        for (int i = 0; i < f.dlc && i < 8; i++) n += snprintf(b + n, sizeof(b) - n, "%02x", f.data[i]);
+        puts(b);
+    }
+}
+
 // Callback invoked by CAN drivers from their RX tasks
 static void on_frame_received(const can_tagged_frame_t *frame, void *user_ctx)
 {
@@ -31,6 +51,9 @@ static void on_frame_received(const can_tagged_frame_t *frame, void *user_ctx)
     // Automations run before the BLE filter so they see all raw traffic.
     automation_manager_on_frame(frame);
     vehicle_control_on_frame(frame);
+    if (frame->bus_id == 0 && frame->frame.id == LANES_ID && !frame->frame.extended) {
+        xQueueOverwrite(s_lanes_q, &frame->frame);
+    }
     // Drop non-matching frames at the source so the bridge task's batching
     // timeout reflects "no more *matching* frames" rather than "no more
     // frames at all". This avoids holding onto a matching frame while we
@@ -47,6 +70,10 @@ esp_err_t can_manager_init(void)
 {
     s_rx_queue = xQueueCreate(RX_QUEUE_DEPTH, sizeof(can_tagged_frame_t));
     if (!s_rx_queue) {
+        return ESP_ERR_NO_MEM;
+    }
+    s_lanes_q = xQueueCreate(1, sizeof(can_frame_t));
+    if (!s_lanes_q || xTaskCreate(lanes_task, "lanes", 3072, NULL, 1, NULL) != pdPASS) {
         return ESP_ERR_NO_MEM;
     }
     s_iface_count = 0;

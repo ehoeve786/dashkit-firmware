@@ -802,6 +802,21 @@ void tesla_ble_disconnect(void)
     central_abort_and_wait(2000);
 }
 
+void tesla_ble_request_disconnect(void)
+{
+    if (s_central.state == ST_IDLE) {
+        return;
+    }
+    if (s_central.conn_handle != 0) {
+        int rc = ble_gap_terminate(s_central.conn_handle, BLE_ERR_REM_USER_CONN_TERM);
+        ESP_LOGI(TAG, "central terminate requested handle=%u rc=%d",
+                 s_central.conn_handle, rc);
+    } else {
+        int rc = ble_gap_conn_cancel();
+        ESP_LOGI(TAG, "central connect cancel requested rc=%d", rc);
+    }
+}
+
 void tesla_ble_set_rx_cb(tesla_ble_rx_fn_t cb, void *arg)
 {
     s_central.rx_cb = cb;

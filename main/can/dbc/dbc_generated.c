@@ -311,6 +311,16 @@ const dbc_signal_t g_dbc_signals[DBC_SIGNAL_COUNT] = {
     { "DAS_summonAvailable", 51, 1, 0, 1.0, 0.0, -1, -1 },
     { "DAS_statusCounter", 52, 4, 0, 1.0, 0.0, -1, -1 },
     { "DAS_statusChecksum", 56, 8, 0, 1.0, 0.0, -1, -1 },
+    // ---- DAS_control (0x2B9) ----
+    { "DAS_setSpeed", 0, 12, 0, 0.1, 0.0, -1, -1 },
+    { "DAS_accState", 12, 4, 0, 1.0, 0.0, -1, -1 },
+    { "DAS_aebEvent", 16, 2, 0, 1.0, 0.0, -1, -1 },
+    { "DAS_jerkMin", 18, 9, 0, 0.018, -9.1, -1, -1 },
+    { "DAS_jerkMax", 27, 8, 0, 0.034, 0.0, -1, -1 },
+    { "DAS_accelMin", 35, 9, 0, 0.04, -15.0, -1, -1 },
+    { "DAS_accelMax", 44, 9, 0, 0.04, -15.0, -1, -1 },
+    { "DAS_controlCounter", 53, 3, 0, 1.0, 0.0, -1, -1 },
+    { "DAS_controlChecksum", 56, 8, 0, 1.0, 0.0, -1, -1 },
 };
 
 const dbc_message_t g_dbc_messages[DBC_MESSAGE_COUNT] = {
@@ -331,15 +341,16 @@ const dbc_message_t g_dbc_messages[DBC_MESSAGE_COUNT] = {
     { "DI_systemStatus", 0x118, 8, 0, 247, 14, DBC_CKSUM_TESLA_BYTESUM, 247, 248 },
     { "DI_speed", 0x257, 8, 0, 261, 5, DBC_CKSUM_TESLA_BYTESUM, 261, 262 },
     { "DAS_status", 0x399, 8, 0, 266, 26, DBC_CKSUM_TESLA_BYTESUM, 291, 290 },
+    { "DAS_control", 0x2B9, 8, 0, 292, 9, DBC_CKSUM_TESLA_BYTESUM, 300, 299 },
 };
 
 static const uint16_t hw_filter_bus0_ids[] = {
-    0x129, 0x118, 0x257, 0x399, 0x389, 0x25D,
+    0x129, 0x118, 0x257, 0x399, 0x389, 0x25D, 0x2B9,
 };
 static const uint16_t hw_filter_bus1_ids[] = {
     0x249, 0x3C2, 0x3E9, 0x3DF, 0x273, 0x3B3, 0x333, 0x347, 0x2F3, 0x334, 0x253, 0x1F9, 0x288, 0x228, 0x3E2, 0x3E3, 0x2E1, 0x352, 0x252, 0x132, 0x332, 0x3B6, 0x405, 0x219, 0x102, 0x103, 0x142, 0x679, 0x31A,
 };
 const dbc_hw_filter_set_t g_dbc_hw_filters[DBC_HW_FILTER_BUS_COUNT] = {
-    { hw_filter_bus0_ids, 6 },
+    { hw_filter_bus0_ids, 7 },
     { hw_filter_bus1_ids, 29 },
 };

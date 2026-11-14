@@ -810,7 +810,7 @@ void tesla_ble_request_disconnect(void)
     if (s_central.state == ST_IDLE) {
         return;
     }
-    if (s_central.conn_handle != 0) {
+    if (s_central.conn_handle != BLE_HS_CONN_HANDLE_NONE) {
         int rc = ble_gap_terminate(s_central.conn_handle, BLE_ERR_REM_USER_CONN_TERM);
         ESP_LOGI(TAG, "central terminate requested handle=%u rc=%d",
                  s_central.conn_handle, rc);

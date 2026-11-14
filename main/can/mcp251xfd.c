@@ -100,6 +100,9 @@ typedef struct {
     TaskHandle_t        rx_task_handle;
     SemaphoreHandle_t   int_sem;
     SemaphoreHandle_t   spi_mutex;
+    // Serialises iface_send: claiming a TX FIFO slot takes several SPI
+    // transactions, and several tasks transmit on the same bus.
+    SemaphoreHandle_t   tx_mutex;
     volatile bool       running;
     // Count of RX FIFO overflow events (each = at least one dropped frame). The
     // chip only flags that an overflow happened, not how many frames were lost.
@@ -709,10 +712,8 @@ static esp_err_t iface_stop(can_interface_t *self)
     return ESP_OK;
 }
 
-static esp_err_t iface_send(can_interface_t *self, const can_frame_t *frame)
+static esp_err_t send_locked(mcp251xfd_ctx_t *ctx, const can_frame_t *frame)
 {
-    mcp251xfd_ctx_t *ctx = (mcp251xfd_ctx_t *)self->ctx;
-
     // Check TX FIFO 2 has space
     uint32_t fifosta;
     read_reg32(ctx, REG_C1FIFOSTA(2), &fifosta);
@@ -763,6 +764,15 @@ static esp_err_t iface_send(can_interface_t *self, const can_frame_t *frame)
     return ESP_OK;
 }
 
+static esp_err_t iface_send(can_interface_t *self, const can_frame_t *frame)
+{
+    mcp251xfd_ctx_t *ctx = (mcp251xfd_ctx_t *)self->ctx;
+    xSemaphoreTake(ctx->tx_mutex, portMAX_DELAY);
+    esp_err_t err = send_locked(ctx, frame);
+    xSemaphoreGive(ctx->tx_mutex);
+    return err;
+}
+
 static void iface_set_rx_callback(can_interface_t *self, can_rx_callback_t cb, void *user_ctx)
 {
     mcp251xfd_ctx_t *ctx = (mcp251xfd_ctx_t *)self->ctx;
@@ -793,6 +803,7 @@ can_interface_t *mcp251xfd_create(const mcp251xfd_config_t *config)
     ctx->running = false;
     ctx->int_sem = xSemaphoreCreateBinary();
     ctx->spi_mutex = xSemaphoreCreateMutex();
+    ctx->tx_mutex = xSemaphoreCreateMutex();
 
     // Initialize SPI bus
     spi_bus_config_t bus_cfg = {

@@ -2,9 +2,11 @@
 #include "dbc.h"
 #include "automation_manager.h"
 #include "ble_server.h"
+#include "can_diag.h"
 
 #include "esp_log.h"
 #include "esp_system.h"
+#include "esp_timer.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/queue.h"
 #include "freertos/semphr.h"
@@ -70,6 +72,9 @@ typedef struct {
 static QueueHandle_t s_queue = NULL;
 static SemaphoreHandle_t s_unlatch_sem = NULL;   // given on each car 0x1F9 while unlatching
 static volatile uint32_t s_unlatch_id = 0;      // 0 = no unlatch in progress
+// When the car's last 0x1F9 reached us: low 32 bits of the microsecond clock,
+// forced odd so 0 can mean "none" (32-bit so the cross-core read is atomic).
+static volatile uint32_t s_unlatch_rx_us = 0;
 
 // Continuous RMW injector: overrides one signal on the car's live frame every
 // period_ms until the car's own value moves away from the baseline captured
@@ -216,6 +221,9 @@ static void door_unlatch(uint16_t door)
                          && (int)l == EPB_PARK && (int)r == EPB_PARK);
     if (refuse) {
         ESP_LOGW(TAG, "door unlatch %u ignored: gear %d, %.1f kph, EPB %d/%d", door, (int)g, kph, (int)l, (int)r);
+        uint8_t rec[8];
+        can_diag_pack_unlatch(rec, (uint8_t)door, true, 0, 0, 0, 0, 0);
+        can_diag_emit(VC_BUS, CAN_DIAG_ID_UNLATCH, rec);
         return;
     }
     dbc_msg_t m = dbc_msg("VCSEC_requests");
@@ -227,19 +235,42 @@ static void door_unlatch(uint16_t door)
     dbc_pack(f.data, sr, REASON_RKE);
     ESP_LOGI(TAG, "door unlatch %u", door);
     xSemaphoreTake(s_unlatch_sem, 0);   // drop a stale give
+    s_unlatch_rx_us = 0;
     s_unlatch_id = f.id;
+    // Phase-lock quality, logged per unlatch so builds can be compared on the
+    // car: how long after the car's own 0x1F9 reached the firmware ours was
+    // handed to the CAN controller, and how many sends found the TX FIFO full.
+    uint32_t sent = 0, refused = 0, locked = 0, lat_max = 0;
+    uint64_t lat_sum = 0;
     TickType_t end = xTaskGetTickCount() + pdMS_TO_TICKS(UNLATCH_HOLD_MS);
     while ((int32_t)(end - xTaskGetTickCount()) > 0) {
         // A full TX FIFO (busy bus) just costs one frame; keep the hold going.
-        can_frame_send(VC_BUS, "VCSEC_requests", &f);
+        if (can_frame_send(VC_BUS, "VCSEC_requests", &f) == ESP_OK) sent++; else refused++;
+        uint32_t rx = s_unlatch_rx_us;
+        if (rx) {
+            uint32_t lat = (uint32_t)esp_timer_get_time() - rx;
+            s_unlatch_rx_us = 0;
+            lat_sum += lat;
+            if (lat > lat_max) lat_max = lat;
+            locked++;
+        }
         xSemaphoreTake(s_unlatch_sem, pdMS_TO_TICKS(UNLATCH_FILL_MS));
     }
     s_unlatch_id = 0;
+    ESP_LOGI(TAG, "door unlatch %u done: %lu sent, %lu refused (TX full), %lu phase-locked, "
+                  "rx->tx avg %lu us, max %lu us",
+             door, (unsigned long)sent, (unsigned long)refused, (unsigned long)locked,
+             (unsigned long)(locked ? lat_sum / locked : 0), (unsigned long)lat_max);
+    uint8_t rec[8];
+    can_diag_pack_unlatch(rec, (uint8_t)door, false, sent, refused, locked,
+                          (uint32_t)(locked ? lat_sum / locked : 0), lat_max);
+    can_diag_emit(VC_BUS, CAN_DIAG_ID_UNLATCH, rec);
 }
 
 void vehicle_control_on_frame(const can_tagged_frame_t *frame)
 {
     if (s_unlatch_id && frame->bus_id == VC_BUS && frame->frame.id == s_unlatch_id) {
+        s_unlatch_rx_us = (uint32_t)esp_timer_get_time() | 1u;
         xSemaphoreGive(s_unlatch_sem);
     }
 }
@@ -345,6 +376,10 @@ static void vehicle_control_task(void *arg)
             door_unlatch(req.value);
             continue;
         }
+        if (req.opcode == VC_CMD_DIAG_LOG) {
+            can_diag_set_enabled(req.value != 0);
+            continue;
+        }
         if (req.opcode == VC_CMD_REBOOT) {
             ESP_LOGW(TAG, "reboot requested, restarting");
             vTaskDelay(pdMS_TO_TICKS(200));  // let the BLE write ack flush
@@ -390,6 +425,7 @@ esp_err_t vehicle_control_submit(uint8_t opcode, uint16_t value)
         opcode != VC_CMD_MIRROR_DIP_TOGGLE &&
         opcode != VC_CMD_REBOOT &&
         opcode != VC_CMD_DOOR_UNLATCH &&
+        opcode != VC_CMD_DIAG_LOG &&
         !is_config_opcode(opcode) &&
         !find_command(opcode)) {
         ESP_LOGW(TAG, "reject unknown opcode 0x%02X", opcode);

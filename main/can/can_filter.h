@@ -18,6 +18,12 @@
 // If the filter is empty, can_filter_should_forward() returns true for all
 // frames (i.e. no filtering). If the filter has any entries, only frames
 // whose (bus_id, addr) exactly match an entry are forwarded.
+//
+// Stream-all build (CONFIG_DASHKIT_CAN_STREAM_ALL): the hardware accepts every
+// frame, so the list is a subscription rather than a restriction. Any standard
+// id can be listed, addr 0xFFFFFFFF subscribes to a whole bus, and an empty
+// filter forwards the ids in dbc/used_messages.txt (what the default build
+// forwards). See can_route.h.
 
 esp_err_t can_filter_init(void);
 

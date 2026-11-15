@@ -1,5 +1,6 @@
 #include "mcp251xfd.h"
 #include "dbc/dbc_generated.h"
+#include "can_diag.h"
 #include "esp_log.h"
 #include "esp_timer.h"
 #include "freertos/FreeRTOS.h"
@@ -7,6 +8,18 @@
 #include "freertos/semphr.h"
 #include <stdbool.h>
 #include <string.h>
+#include "sdkconfig.h"
+
+#ifdef CONFIG_DASHKIT_CAN_STREAM_ALL
+#include "mcp251xfd_stream.h"
+#include "can_route.h"
+#include "esp_heap_caps.h"
+// Stream-all build: every SPI transfer on the shared bus is a polling
+// transaction (no per-transfer interrupt and context switch).
+#define spi_xfer_blocking  spi_device_polling_transmit
+#else
+#define spi_xfer_blocking  spi_device_transmit
+#endif
 
 static const char *TAG = "mcp251xfd";
 
@@ -111,6 +124,18 @@ typedef struct {
     volatile uint32_t   rx_overflow_events;
     uint32_t            rx_overflow_reported;  // last value the timer logged
     esp_timer_handle_t  overflow_timer;
+#ifdef CONFIG_DASHKIT_CAN_STREAM_ALL
+    // Stream-all receive/transmit core (mcp251xfd_stream.c). spi_mutex guards
+    // each group of SPI transfers; spi_gate makes the hand-over fair, so a
+    // transmit waiting for the bus goes next even while the RX task is draining
+    // back to back.
+    mcpfd_stream_t      stream;
+    SemaphoreHandle_t   spi_gate;
+    volatile bool       stream_ready;      // filters programmed, chip in normal mode
+    mcpfd_stats_t       stats_reported;    // snapshot at the last report
+    volatile uint32_t   step_max_us;       // longest single service step
+    volatile uint32_t   busy_gap_max_us;   // longest gap between steps while frames were waiting
+#endif
 } mcp251xfd_ctx_t;
 
 // ---------------------------------------------------------------------------
@@ -133,7 +158,7 @@ static esp_err_t spi_write_reg(mcp251xfd_ctx_t *ctx, uint16_t addr, const uint8_
     t.tx_buffer = buf;
 
     xSemaphoreTake(ctx->spi_mutex, portMAX_DELAY);
-    esp_err_t err = spi_device_transmit(ctx->spi_dev, &t);
+    esp_err_t err = spi_xfer_blocking(ctx->spi_dev, &t);
     xSemaphoreGive(ctx->spi_mutex);
     return err;
 }
@@ -156,7 +181,7 @@ static esp_err_t spi_read_reg(mcp251xfd_ctx_t *ctx, uint16_t addr, uint8_t *data
     };
 
     xSemaphoreTake(ctx->spi_mutex, portMAX_DELAY);
-    esp_err_t err = spi_device_transmit(ctx->spi_dev, &t);
+    esp_err_t err = spi_xfer_blocking(ctx->spi_dev, &t);
     xSemaphoreGive(ctx->spi_mutex);
     if (err == ESP_OK) {
         memcpy(data, rx_buf + 2, len);
@@ -187,17 +212,65 @@ static esp_err_t spi_reset(mcp251xfd_ctx_t *ctx)
         .length = 16,
         .tx_buffer = tx,
     };
-    return spi_device_transmit(ctx->spi_dev, &t);
+    return spi_xfer_blocking(ctx->spi_dev, &t);
 }
+
+#ifdef CONFIG_DASHKIT_CAN_STREAM_ALL
+// ---------------------------------------------------------------------------
+// Stream-all glue: SPI transfer, locking and frame delivery for the core in
+// mcp251xfd_stream.c
+// ---------------------------------------------------------------------------
+static esp_err_t stream_xfer(void *io, const uint8_t *tx, uint8_t *rx, size_t len)
+{
+    mcp251xfd_ctx_t *ctx = (mcp251xfd_ctx_t *)io;
+    spi_transaction_t t = {
+        .length = len * 8,
+        .tx_buffer = tx,
+        .rx_buffer = rx,
+    };
+    return spi_device_polling_transmit(ctx->spi_dev, &t);
+}
+
+static void stream_lock(void *arg)
+{
+    mcp251xfd_ctx_t *ctx = (mcp251xfd_ctx_t *)arg;
+    // Whoever holds the gate is next in line for the bus. The RX task has to
+    // pass through it between chunks, so it queues behind a waiting transmit
+    // instead of re-taking the bus straight away.
+    xSemaphoreTake(ctx->spi_gate, portMAX_DELAY);
+    xSemaphoreTake(ctx->spi_mutex, portMAX_DELAY);
+    xSemaphoreGive(ctx->spi_gate);
+}
+
+static void stream_unlock(void *arg)
+{
+    mcp251xfd_ctx_t *ctx = (mcp251xfd_ctx_t *)arg;
+    xSemaphoreGive(ctx->spi_mutex);
+}
+
+static void stream_deliver(void *arg, const can_frame_t *frame, bool fast_lane)
+{
+    (void)fast_lane;
+    mcp251xfd_ctx_t *ctx = (mcp251xfd_ctx_t *)arg;
+    if (!ctx->rx_cb) return;
+    can_tagged_frame_t tagged;
+    tagged.frame = *frame;
+    tagged.bus_id = ctx->bus_id;
+    tagged.timestamp_us = 0;
+    ctx->rx_cb(&tagged, ctx->rx_cb_ctx);
+}
+#endif  // CONFIG_DASHKIT_CAN_STREAM_ALL
 
 // ---------------------------------------------------------------------------
 // DLC helpers
 // ---------------------------------------------------------------------------
+#ifndef CONFIG_DASHKIT_CAN_STREAM_ALL
 static uint8_t dlc_to_len(uint8_t dlc)
 {
     static const uint8_t map[] = {0,1,2,3,4,5,6,7,8,12,16,20,24,32,48,64};
     return (dlc < 16) ? map[dlc] : 64;
 }
+#endif
 
 // ---------------------------------------------------------------------------
 // Configuration
@@ -292,6 +365,16 @@ static esp_err_t configure_bitrate(mcp251xfd_ctx_t *ctx)
 
 static esp_err_t configure_fifos(mcp251xfd_ctx_t *ctx)
 {
+#ifdef CONFIG_DASHKIT_CAN_STREAM_ALL
+    // Fast-lane RX FIFO 1, TX FIFO 2, bulk RX FIFOs 3..6. Until iface_start
+    // programs the real filters, everything is routed to FIFO 1 so the loopback
+    // self-test (which reads FIFO 1) works unchanged.
+    stream_lock(ctx);
+    esp_err_t serr = mcpfd_stream_config_fifos(&ctx->stream);
+    if (serr == ESP_OK) serr = mcpfd_stream_filters_accept_all_fast(&ctx->stream);
+    stream_unlock(ctx);
+    return serr;
+#else
     // FIFO 1: RX FIFO - 32 messages deep (max for FSIZE field), 8 byte payload.
     // 32 * 16 bytes = 512 B of the chip's 2 KB RAM. TX FIFO uses another 64 B.
     // Larger depth absorbs SPI/scheduling jitter (both CAN chips share SPI2,
@@ -330,6 +413,7 @@ static esp_err_t configure_fifos(mcp251xfd_ctx_t *ctx)
              (unsigned)n);
 
     return ESP_OK;
+#endif
 }
 
 // ---------------------------------------------------------------------------
@@ -345,6 +429,7 @@ static void IRAM_ATTR gpio_isr_handler(void *arg)
     }
 }
 
+#ifndef CONFIG_DASHKIT_CAN_STREAM_ALL
 static void read_rx_fifo(mcp251xfd_ctx_t *ctx)
 {
     while (true) {
@@ -413,7 +498,111 @@ static void read_rx_fifo(mcp251xfd_ctx_t *ctx)
         }
     }
 }
+#endif  // !CONFIG_DASHKIT_CAN_STREAM_ALL
 
+#ifdef CONFIG_DASHKIT_CAN_STREAM_ALL
+// Periodic stream statistics. The fast lane (frames the firmware acts on) must
+// never show an overflow; bulk overflows only cost streamed frames.
+static void overflow_report_cb(void *arg)
+{
+    mcp251xfd_ctx_t *ctx = (mcp251xfd_ctx_t *)arg;
+    mcpfd_stats_t now = ctx->stream.stats;       // racy snapshot, counters only
+    const mcpfd_stats_t *was = &ctx->stats_reported;
+    uint32_t bulk = 0, bulk_ov = 0, bulk_ov_was = 0, bulk_was = 0;
+    for (int i = 1; i < MCPFD_LANES; i++) {
+        bulk += now.rx_frames[i];
+        bulk_was += was->rx_frames[i];
+        bulk_ov += now.rx_overflow[i];
+        bulk_ov_was += was->rx_overflow[i];
+    }
+    uint32_t secs = (uint32_t)(RX_OVERFLOW_REPORT_US / 1000000);
+    uint32_t step_max = ctx->step_max_us, gap_max = ctx->busy_gap_max_us;
+    ctx->step_max_us = 0;
+    ctx->busy_gap_max_us = 0;
+    ESP_LOGI(TAG, "bus%u stream: fast %lu fps (ovf %lu, +%lu) bulk %lu fps (ovf %lu, +%lu) "
+                  "tx %lu (full %lu) step max %lu us, busy gap max %lu us",
+             ctx->bus_id,
+             (unsigned long)((now.rx_frames[0] - was->rx_frames[0]) / secs),
+             (unsigned long)now.rx_overflow[0],
+             (unsigned long)(now.rx_overflow[0] - was->rx_overflow[0]),
+             (unsigned long)((bulk - bulk_was) / secs),
+             (unsigned long)bulk_ov, (unsigned long)(bulk_ov - bulk_ov_was),
+             (unsigned long)now.tx_frames, (unsigned long)now.tx_full,
+             (unsigned long)step_max, (unsigned long)gap_max);
+    if (now.rx_fast_in_bulk != was->rx_fast_in_bulk || now.rx_head_glitch != was->rx_head_glitch ||
+        now.rx_layout_fallback != was->rx_layout_fallback || now.rx_desync != was->rx_desync ||
+        now.spi_errors != was->spi_errors) {
+        ESP_LOGW(TAG, "bus%u stream anomalies: fast-in-bulk %lu, head glitch %lu, "
+                      "layout fallback %lu, desync %lu, spi errors %lu",
+                 ctx->bus_id, (unsigned long)now.rx_fast_in_bulk,
+                 (unsigned long)now.rx_head_glitch, (unsigned long)now.rx_layout_fallback,
+                 (unsigned long)now.rx_desync, (unsigned long)now.spi_errors);
+    }
+    if (can_diag_enabled()) {
+        uint8_t d[8];
+        can_diag_pack4(d, (now.rx_frames[0] - was->rx_frames[0]) / secs, (bulk - bulk_was) / secs,
+                       now.rx_overflow[0], bulk_ov);
+        can_diag_emit(ctx->bus_id, CAN_DIAG_ID_STREAM_RX, d);
+        can_diag_pack4(d, now.tx_frames, now.tx_full, step_max, gap_max);
+        can_diag_emit(ctx->bus_id, CAN_DIAG_ID_STREAM_TX, d);
+        can_diag_pack4(d, now.rx_head_glitch, now.rx_layout_fallback, now.rx_desync, now.spi_errors);
+        can_diag_emit(ctx->bus_id, CAN_DIAG_ID_STREAM_ERR, d);
+        can_diag_pack4(d, now.rx_fast_in_bulk, 0, 0, 0);
+        can_diag_emit(ctx->bus_id, CAN_DIAG_ID_STREAM_MISROUTE, d);
+    }
+    ctx->stats_reported = now;
+}
+
+// How long the RX task may drain without a break before it sleeps one tick, so
+// lower-priority work on its core (the idle task, the watchdog) still runs on a
+// bus that never goes quiet.
+#define STREAM_MAX_BUSY_US   (500 * 1000)
+
+static void rx_task(void *arg)
+{
+    mcp251xfd_ctx_t *ctx = (mcp251xfd_ctx_t *)arg;
+    const mcpfd_hooks_t hooks = {
+        .lock = stream_lock,
+        .unlock = stream_unlock,
+        .deliver = stream_deliver,
+        .ctx = ctx,
+    };
+
+    while (ctx->running) {
+        // Woken by the INT falling edge (any RX FIFO not empty). The 2 ms
+        // timeout covers a missed edge: INT is level-driven and stays low
+        // while frames are waiting.
+        xSemaphoreTake(ctx->int_sem, pdMS_TO_TICKS(2));
+        if (!ctx->stream_ready) continue;
+
+        int64_t burst_start = esp_timer_get_time();
+        int64_t prev = 0;
+        for (;;) {
+            int64_t t0 = esp_timer_get_time();
+            if (prev && (uint32_t)(t0 - prev) > ctx->busy_gap_max_us) {
+                ctx->busy_gap_max_us = (uint32_t)(t0 - prev);
+            }
+            // One chunk: the fast lane if it holds anything, else one bulk lane.
+            int n = mcpfd_stream_step(&ctx->stream, &hooks);
+            int64_t t1 = esp_timer_get_time();
+            if ((uint32_t)(t1 - t0) > ctx->step_max_us) {
+                ctx->step_max_us = (uint32_t)(t1 - t0);
+            }
+            if (n == 0 || !ctx->running) break;
+            prev = t0;
+            if (t1 - burst_start > STREAM_MAX_BUSY_US) {
+                vTaskDelay(1);
+                burst_start = esp_timer_get_time();
+                prev = 0;
+            } else {
+                taskYIELD();   // let the other bus's RX task in between chunks
+            }
+        }
+    }
+
+    vTaskDelete(NULL);
+}
+#else
 // Periodic RX FIFO overflow reporter.
 static void overflow_report_cb(void *arg)
 {
@@ -421,6 +610,12 @@ static void overflow_report_cb(void *arg)
     uint32_t total = ctx->rx_overflow_events;
     uint32_t delta = total - ctx->rx_overflow_reported;
     ctx->rx_overflow_reported = total;
+    if (can_diag_enabled()) {
+        uint8_t d[8];
+        can_diag_put32(d, total);
+        can_diag_put32(d + 4, delta);
+        can_diag_emit(ctx->bus_id, CAN_DIAG_ID_LEGACY_RX, d);
+    }
     ESP_LOGI(TAG, "bus%u RX FIFO overflow: %lu total (+%lu in %llds)",
              ctx->bus_id, (unsigned long)total, (unsigned long)delta,
              (long long)(RX_OVERFLOW_REPORT_US / 1000000));
@@ -466,6 +661,7 @@ static void rx_task(void *arg)
 
     vTaskDelete(NULL);
 }
+#endif  // CONFIG_DASHKIT_CAN_STREAM_ALL
 
 // ---------------------------------------------------------------------------
 // Interface implementation
@@ -680,6 +876,28 @@ static esp_err_t iface_start(can_interface_t *self)
     write_reg32(ctx, REG_C1FIFOCON(1), fifocon_reset);
     vTaskDelay(pdMS_TO_TICKS(1));
 
+#ifdef CONFIG_DASHKIT_CAN_STREAM_ALL
+    // Still in configuration mode: replace the self-test's "everything to
+    // FIFO 1" filter with the real routing (firmware-used ids to the fast lane,
+    // the rest spread over the bulk lanes) and empty every RX FIFO.
+    {
+        uint16_t fast[MCPFD_MAX_FAST_IDS];
+        size_t wanted = can_route_fast_ids(ctx->bus_id, fast, MCPFD_MAX_FAST_IDS);
+        size_t used = 0;
+        stream_lock(ctx);
+        esp_err_t ferr = mcpfd_stream_filters_program(&ctx->stream, fast, wanted, &used);
+        if (ferr == ESP_OK) ferr = mcpfd_stream_reset_rx(&ctx->stream);
+        stream_unlock(ctx);
+        if (ferr != ESP_OK) {
+            ESP_LOGE(TAG, "Bus %d: stream filter setup failed: %s", ctx->bus_id, esp_err_to_name(ferr));
+            return ferr;
+        }
+        ESP_LOGI(TAG, "Bus %u: stream-all, %u fast-lane ids, %d bulk lanes",
+                 (unsigned)ctx->bus_id, (unsigned)used, MCPFD_BULK_LANES);
+    }
+    vTaskDelay(pdMS_TO_TICKS(1));
+#endif
+
     // Clear all interrupt flags
     write_reg32(ctx, REG_C1INT, C1INT_RXIE);  // Keep RXIE, clear all flags
     write_reg32(ctx, REG_C1BDIAG0, 0);
@@ -695,6 +913,9 @@ static esp_err_t iface_start(can_interface_t *self)
         return err;
     }
 
+#ifdef CONFIG_DASHKIT_CAN_STREAM_ALL
+    ctx->stream_ready = true;
+#endif
     return ESP_OK;
 }
 
@@ -702,6 +923,9 @@ static esp_err_t iface_stop(can_interface_t *self)
 {
     mcp251xfd_ctx_t *ctx = (mcp251xfd_ctx_t *)self->ctx;
     ctx->running = false;
+#ifdef CONFIG_DASHKIT_CAN_STREAM_ALL
+    ctx->stream_ready = false;
+#endif
 
     gpio_isr_handler_remove(ctx->pin_int);
 
@@ -714,6 +938,14 @@ static esp_err_t iface_stop(can_interface_t *self)
 
 static esp_err_t send_locked(mcp251xfd_ctx_t *ctx, const can_frame_t *frame)
 {
+#ifdef CONFIG_DASHKIT_CAN_STREAM_ALL
+    // Three SPI transfers under one lock. The lock is handed over fairly, so
+    // this waits for at most the RX chunk in progress.
+    stream_lock(ctx);
+    esp_err_t serr = mcpfd_stream_send(&ctx->stream, frame);
+    stream_unlock(ctx);
+    return serr;
+#else
     // Check TX FIFO 2 has space
     uint32_t fifosta;
     read_reg32(ctx, REG_C1FIFOSTA(2), &fifosta);
@@ -762,6 +994,7 @@ static esp_err_t send_locked(mcp251xfd_ctx_t *ctx, const can_frame_t *frame)
     write_reg32(ctx, REG_C1FIFOCON(2), fifocon);
 
     return ESP_OK;
+#endif
 }
 
 static esp_err_t iface_send(can_interface_t *self, const can_frame_t *frame)
@@ -804,6 +1037,25 @@ can_interface_t *mcp251xfd_create(const mcp251xfd_config_t *config)
     ctx->int_sem = xSemaphoreCreateBinary();
     ctx->spi_mutex = xSemaphoreCreateMutex();
     ctx->tx_mutex = xSemaphoreCreateMutex();
+#ifdef CONFIG_DASHKIT_CAN_STREAM_ALL
+    ctx->spi_gate = xSemaphoreCreateMutex();
+    ctx->stream.xfer = stream_xfer;
+    ctx->stream.io = ctx;
+    // DMA-capable, word-aligned scratch buffers: the SPI driver uses them
+    // directly instead of allocating a bounce buffer per transfer.
+    ctx->stream.reg_tx = heap_caps_malloc(MCPFD_REG_BUF_SIZE, MALLOC_CAP_DMA);
+    ctx->stream.reg_rx = heap_caps_malloc(MCPFD_REG_BUF_SIZE, MALLOC_CAP_DMA);
+    ctx->stream.blk_tx = heap_caps_malloc(MCPFD_BLK_BUF_SIZE, MALLOC_CAP_DMA);
+    ctx->stream.blk_rx = heap_caps_malloc(MCPFD_BLK_BUF_SIZE, MALLOC_CAP_DMA);
+    if (!ctx->spi_gate || !ctx->stream.reg_tx || !ctx->stream.reg_rx ||
+        !ctx->stream.blk_tx || !ctx->stream.blk_rx) {
+        ESP_LOGE(TAG, "stream buffers: out of memory");
+        free(ctx);
+        free(iface);
+        return NULL;
+    }
+    mcpfd_stream_init(&ctx->stream);
+#endif
 
     // Initialize SPI bus
     spi_bus_config_t bus_cfg = {
@@ -812,7 +1064,11 @@ can_interface_t *mcp251xfd_create(const mcp251xfd_config_t *config)
         .sclk_io_num = config->pin_sclk,
         .quadwp_io_num = -1,
         .quadhd_io_num = -1,
+#ifdef CONFIG_DASHKIT_CAN_STREAM_ALL
+        .max_transfer_sz = 160, // chunked RX read: 2 cmd + 8 * 16 data, with margin
+#else
         .max_transfer_sz = 76,  // 8 header + 4 cmd + 64 data
+#endif
     };
 
     esp_err_t err = spi_bus_initialize(config->spi_host, &bus_cfg, SPI_DMA_CH_AUTO);

@@ -153,6 +153,10 @@ Every 5 s the log shows, per bus, `stream: fast … fps (ovf …) bulk … fps (
 
 Host tests for this path (no ESP-IDF needed): `bash tools/test/run_can_stream_test.sh`.
 
+### Diagnostic records
+
+Control opcode `0x51` (value 1/0) makes the firmware add diagnostic records to the CAN stream it sends over BLE, in either build: per-bus receive statistics every 5 s and the outcome of every door unlatch (frames sent, TX-full refusals, delay from the car's frame to ours). The records have bus byte `0x10 | bus` and ids `0x1DA5xxxx`, so they cannot be confused with CAN frames; `main/can/can_diag.h` documents each layout. DashPilot's developer option **Record CAN log** switches them on and writes them to a CSV with the frames.
+
 ## Project Layout
 
 | Path | Contents |

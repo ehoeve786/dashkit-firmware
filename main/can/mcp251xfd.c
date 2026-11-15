@@ -1,5 +1,6 @@
 #include "mcp251xfd.h"
 #include "dbc/dbc_generated.h"
+#include "can_diag.h"
 #include "esp_log.h"
 #include "esp_timer.h"
 #include "freertos/FreeRTOS.h"
@@ -534,6 +535,18 @@ static void overflow_report_cb(void *arg)
                  (unsigned long)now.rx_head_glitch, (unsigned long)now.rx_layout_fallback,
                  (unsigned long)now.rx_desync, (unsigned long)now.spi_errors);
     }
+    if (can_diag_enabled()) {
+        uint8_t d[8];
+        can_diag_pack4(d, (now.rx_frames[0] - was->rx_frames[0]) / secs, (bulk - bulk_was) / secs,
+                       now.rx_overflow[0], bulk_ov);
+        can_diag_emit(ctx->bus_id, CAN_DIAG_ID_STREAM_RX, d);
+        can_diag_pack4(d, now.tx_frames, now.tx_full, step_max, gap_max);
+        can_diag_emit(ctx->bus_id, CAN_DIAG_ID_STREAM_TX, d);
+        can_diag_pack4(d, now.rx_head_glitch, now.rx_layout_fallback, now.rx_desync, now.spi_errors);
+        can_diag_emit(ctx->bus_id, CAN_DIAG_ID_STREAM_ERR, d);
+        can_diag_pack4(d, now.rx_fast_in_bulk, 0, 0, 0);
+        can_diag_emit(ctx->bus_id, CAN_DIAG_ID_STREAM_MISROUTE, d);
+    }
     ctx->stats_reported = now;
 }
 
@@ -594,6 +607,12 @@ static void overflow_report_cb(void *arg)
     uint32_t total = ctx->rx_overflow_events;
     uint32_t delta = total - ctx->rx_overflow_reported;
     ctx->rx_overflow_reported = total;
+    if (can_diag_enabled()) {
+        uint8_t d[8];
+        can_diag_put32(d, total);
+        can_diag_put32(d + 4, delta);
+        can_diag_emit(ctx->bus_id, CAN_DIAG_ID_LEGACY_RX, d);
+    }
     ESP_LOGI(TAG, "bus%u RX FIFO overflow: %lu total (+%lu in %llds)",
              ctx->bus_id, (unsigned long)total, (unsigned long)delta,
              (long long)(RX_OVERFLOW_REPORT_US / 1000000));

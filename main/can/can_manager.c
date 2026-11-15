@@ -1,5 +1,6 @@
 #include "can_manager.h"
 #include "can_filter.h"
+#include "can_diag.h"
 #include "automation_manager.h"
 #include "vehicle_control.h"
 #include "dbc.h"
@@ -44,6 +45,10 @@ static void route_report_cb(void *arg)
              (unsigned long)((core - s_rep_core) / secs),
              (unsigned long)((fwd - s_rep_forwarded) / secs),
              (unsigned long)full, (unsigned long)(full - s_rep_queue_full));
+    uint8_t d[8];
+    can_diag_pack4(d, (seen - s_rep_seen) / secs, (core - s_rep_core) / secs,
+                   (fwd - s_rep_forwarded) / secs, full);
+    can_diag_emit(0, CAN_DIAG_ID_ROUTE, d);
     s_rep_seen = seen; s_rep_core = core; s_rep_forwarded = fwd; s_rep_queue_full = full;
 }
 
@@ -174,6 +179,14 @@ esp_err_t can_manager_send(uint8_t bus_id, const can_frame_t *frame)
     }
     ESP_LOGW(TAG, "send: no interface for bus_id=%d", bus_id);
     return ESP_ERR_NOT_FOUND;
+}
+
+esp_err_t can_manager_inject_unfiltered(const can_tagged_frame_t *frame)
+{
+    if (!s_rx_queue) return ESP_ERR_INVALID_STATE;
+    can_tagged_frame_t stamped = *frame;
+    stamped.timestamp_us = (uint32_t)esp_timer_get_time();
+    return xQueueSend(s_rx_queue, &stamped, 0) == pdTRUE ? ESP_OK : ESP_ERR_NO_MEM;
 }
 
 esp_err_t can_manager_inject(const can_tagged_frame_t *frame)

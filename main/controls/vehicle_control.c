@@ -2,6 +2,7 @@
 #include "dbc.h"
 #include "automation_manager.h"
 #include "ble_server.h"
+#include "can_diag.h"
 
 #include "esp_log.h"
 #include "esp_system.h"
@@ -211,6 +212,9 @@ static void door_unlatch(uint16_t door)
                          && (int)l == EPB_PARK && (int)r == EPB_PARK);
     if (refuse) {
         ESP_LOGW(TAG, "door unlatch %u ignored: gear %d, %.1f kph, EPB %d/%d", door, (int)g, kph, (int)l, (int)r);
+        uint8_t rec[8];
+        can_diag_pack_unlatch(rec, (uint8_t)door, true, 0, 0, 0, 0, 0);
+        can_diag_emit(VC_BUS, CAN_DIAG_ID_UNLATCH, rec);
         return;
     }
     dbc_msg_t m = dbc_msg("VCSEC_requests");
@@ -248,6 +252,10 @@ static void door_unlatch(uint16_t door)
                   "rx->tx avg %lu us, max %lu us",
              door, (unsigned long)sent, (unsigned long)refused, (unsigned long)locked,
              (unsigned long)(locked ? lat_sum / locked : 0), (unsigned long)lat_max);
+    uint8_t rec[8];
+    can_diag_pack_unlatch(rec, (uint8_t)door, false, sent, refused, locked,
+                          (uint32_t)(locked ? lat_sum / locked : 0), lat_max);
+    can_diag_emit(VC_BUS, CAN_DIAG_ID_UNLATCH, rec);
 }
 
 void vehicle_control_on_frame(const can_tagged_frame_t *frame)
@@ -359,6 +367,10 @@ static void vehicle_control_task(void *arg)
             door_unlatch(req.value);
             continue;
         }
+        if (req.opcode == VC_CMD_DIAG_LOG) {
+            can_diag_set_enabled(req.value != 0);
+            continue;
+        }
         if (req.opcode == VC_CMD_REBOOT) {
             ESP_LOGW(TAG, "reboot requested, restarting");
             vTaskDelay(pdMS_TO_TICKS(200));  // let the BLE write ack flush
@@ -404,6 +416,7 @@ esp_err_t vehicle_control_submit(uint8_t opcode, uint16_t value)
         opcode != VC_CMD_MIRROR_DIP_TOGGLE &&
         opcode != VC_CMD_REBOOT &&
         opcode != VC_CMD_DOOR_UNLATCH &&
+        opcode != VC_CMD_DIAG_LOG &&
         !is_config_opcode(opcode) &&
         !find_command(opcode)) {
         ESP_LOGW(TAG, "reject unknown opcode 0x%02X", opcode);

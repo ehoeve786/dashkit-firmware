@@ -3,6 +3,7 @@
 #include "ble_appchan.h"
 #include "bthome.h"
 #include "can_filter.h"
+#include "can_diag.h"
 #include "can_manager.h"
 #include "can_interface.h"
 #include "vehicle_control.h"
@@ -358,6 +359,7 @@ static int gap_event_handler(struct ble_gap_event *event, void *arg)
             if (conn_count() == 0) {
                 // Reset the CAN filter to pass-through for the next client.
                 can_filter_set(NULL, 0);
+                can_diag_set_enabled(false);
             }
         }
         start_advertising();

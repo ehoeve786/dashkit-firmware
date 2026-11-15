@@ -9,6 +9,7 @@
 
 #include "mcp251xfd_stream.h"
 #include "can_route.h"
+#include "can_diag.h"
 #include "dbc_generated.h"
 
 #include <stdio.h>
@@ -696,8 +697,27 @@ static void route_fast_ids_fit_the_filter_budget(void)
     }
 }
 
+static void diag_record_layout(void)
+{
+    uint8_t d[8];
+    can_diag_pack4(d, 0x1234, 70000, 0, 0xFFFF);            // little-endian, saturating
+    const uint8_t want4[8] = { 0x34, 0x12, 0xFF, 0xFF, 0x00, 0x00, 0xFF, 0xFF };
+    CHECK(memcmp(d, want4, 8) == 0);
+
+    can_diag_pack_unlatch(d, 2, false, 12, 1, 9, 310, 70000);
+    const uint8_t wantu[8] = { 2, 12, 1, 9, 0x36, 0x01, 0xFF, 0xFF };
+    CHECK(memcmp(d, wantu, 8) == 0);
+    can_diag_pack_unlatch(d, 3, true, 300, 0, 0, 0, 0);     // refused by the gate; counts saturate
+    CHECK(d[0] == 0x83 && d[1] == 0xFF);
+
+    // Record ids can never be a real (11-bit) CAN id, and the bus byte never a real bus.
+    CHECK(CAN_DIAG_ID_HELLO > 0x7FF && CAN_DIAG_ID_UNLATCH > 0x7FF);
+    CHECK((CAN_DIAG_BUS_FLAG | 1) >= CAN_ROUTE_BUSES);
+}
+
 int main(void)
 {
+    diag_record_layout();
     layout_matches_the_chip();
     filters_route_fast_and_bulk();
     accept_all_fast_filter_for_the_self_test();

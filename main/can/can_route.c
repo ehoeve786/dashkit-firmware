@@ -6,8 +6,8 @@
 #define WORDS  64   // 2048 standard ids / 32
 
 typedef struct {
-    uint32_t bits[CAN_ROUTE_BUSES][WORDS];
-    bool     all[CAN_ROUTE_BUSES];   // wildcard: every frame on the bus
+    uint32_t bits[CAN_ROUTE_APP_BUSES][WORDS];
+    bool     all[CAN_ROUTE_APP_BUSES];   // wildcard: every frame on the bus
     bool     active;                 // false: no app list, use the manifest set
 } forward_set_t;
 
@@ -45,7 +45,7 @@ void can_route_forward_begin(void)
 void can_route_forward_add(uint8_t bus, uint32_t addr)
 {
     forward_set_t *w = &s_fwd[s_fwd_idx ^ 1];
-    if (bus >= CAN_ROUTE_BUSES) return;
+    if (bus >= CAN_ROUTE_APP_BUSES) return;
     if (addr == CAN_ROUTE_ADDR_ALL) {
         w->all[bus] = true;
     } else if (addr <= 0x7FF) {
@@ -62,10 +62,10 @@ void can_route_forward_commit(size_t entries)
 
 uint8_t can_route_classify(uint8_t bus, uint32_t id, bool extended)
 {
-    if (bus >= CAN_ROUTE_BUSES) return 0;
+    if (bus >= CAN_ROUTE_APP_BUSES) return 0;
     const forward_set_t *f = &s_fwd[s_fwd_idx];
     bool std = !extended && id <= 0x7FF;
-    bool core = std && test(s_core[bus], id);
+    bool core = std && bus < CAN_ROUTE_BUSES && test(s_core[bus], id);
     bool fwd;
     if (!f->active) {
         fwd = core;

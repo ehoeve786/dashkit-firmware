@@ -23,6 +23,9 @@
 #include <stdint.h>
 
 #define CAN_ROUTE_BUSES      2
+// The app can also subscribe to buses the firmware injects but never reads
+// (2 and 3: the comma 3X's party bus and Autopilot side over USB).
+#define CAN_ROUTE_APP_BUSES  4
 #define CAN_ROUTE_CORE       0x01
 #define CAN_ROUTE_FORWARD    0x02
 

@@ -15,6 +15,8 @@
 //   ...
 // repeated for each bus.
 //
+// The address 0xFFFFFFFF (CAN_ROUTE_ADDR_ALL) matches every frame on its bus.
+//
 // If the filter is empty, can_filter_should_forward() returns true for all
 // frames (i.e. no filtering). If the filter has any entries, only frames
 // whose (bus_id, addr) exactly match an entry are forwarded.

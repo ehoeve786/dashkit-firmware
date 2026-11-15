@@ -654,7 +654,8 @@ static void route_app_list_is_a_subscription(void)
     can_route_forward_add(0, 0x129);
     can_route_forward_add(7, 0x129);              // unknown bus: ignored
     can_route_forward_add(1, 0x12345678);         // extended id: ignored without the wildcard
-    can_route_forward_commit(4);
+    can_route_forward_add(2, other);              // app-only bus (comma 3X party bus)
+    can_route_forward_commit(5);
 
     CHECK(can_route_classify(1, other, false) == CAN_ROUTE_FORWARD);      // beyond the manifest
     CHECK(can_route_classify(0, other, false) == 0);                      // per bus
@@ -662,6 +663,10 @@ static void route_app_list_is_a_subscription(void)
     // A manifest id the app did not list still feeds the firmware, not the app.
     CHECK(can_route_classify(1, core_id, false) == CAN_ROUTE_CORE);
     CHECK(can_route_classify(1, 0x12345678, true) == 0);
+    // App-only buses: forwarded when listed, never fed to the firmware.
+    CHECK(can_route_classify(2, other, false) == CAN_ROUTE_FORWARD);
+    CHECK(can_route_classify(3, other, false) == 0);
+    CHECK(can_route_classify(7, 0x129, false) == 0);
 
     // Wildcard: the whole bus, extended frames included.
     can_route_forward_begin();
@@ -671,6 +676,10 @@ static void route_app_list_is_a_subscription(void)
     CHECK(can_route_classify(1, core_id, false) == (CAN_ROUTE_CORE | CAN_ROUTE_FORWARD));
     CHECK(can_route_classify(1, 0x12345678, true) == CAN_ROUTE_FORWARD);
     CHECK(can_route_classify(0, other, false) == 0);
+    can_route_forward_begin();
+    can_route_forward_add(3, CAN_ROUTE_ADDR_ALL);
+    can_route_forward_commit(1);
+    CHECK(can_route_classify(3, core_id, false) == CAN_ROUTE_FORWARD);
 
     // Clearing the list (the app disconnected) restores the default.
     can_route_forward_begin();
@@ -712,7 +721,7 @@ static void diag_record_layout(void)
 
     // Record ids can never be a real (11-bit) CAN id, and the bus byte never a real bus.
     CHECK(CAN_DIAG_ID_HELLO > 0x7FF && CAN_DIAG_ID_UNLATCH > 0x7FF);
-    CHECK((CAN_DIAG_BUS_FLAG | 1) >= CAN_ROUTE_BUSES);
+    CHECK((CAN_DIAG_BUS_FLAG | 1) >= CAN_ROUTE_APP_BUSES);
 }
 
 int main(void)

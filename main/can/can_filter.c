@@ -3,6 +3,9 @@
 #include "esp_log.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/semphr.h"
+#include "sdkconfig.h"
+
+#include "can_route.h"
 
 static const char *TAG = "can_filter";
 
@@ -74,6 +77,16 @@ esp_err_t can_filter_set(const uint8_t *data, size_t len)
     }
 
     s_count = new_count;
+#ifdef CONFIG_DASHKIT_CAN_STREAM_ALL
+    // Stream-all build: the per-frame decision is made by can_route (lock-free
+    // bit lookups), so mirror the accepted list into it. An empty list returns
+    // to the default of forwarding the manifest ids.
+    can_route_forward_begin();
+    for (size_t i = 0; i < new_count; i++) {
+        can_route_forward_add(s_entries[i].bus_id, s_entries[i].addr);
+    }
+    can_route_forward_commit(new_count);
+#endif
     xSemaphoreGive(s_lock);
 
     ESP_LOGI(TAG, "Filter updated from %u-byte write: %u entries%s",
@@ -97,7 +110,8 @@ bool can_filter_should_forward(uint8_t bus_id, uint32_t addr)
     size_t count = s_count;
     bool match = (count == 0);  // Empty filter = forward all
     for (size_t i = 0; i < count && !match; i++) {
-        if (s_entries[i].bus_id == bus_id && s_entries[i].addr == addr) {
+        if (s_entries[i].bus_id == bus_id &&
+            (s_entries[i].addr == addr || s_entries[i].addr == CAN_ROUTE_ADDR_ALL)) {
             match = true;
         }
     }

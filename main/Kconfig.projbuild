@@ -38,4 +38,21 @@ menu "DashKit"
             AA:BB:CC:DD:EE:FF seen"). BTHome advertisements are unauthenticated,
             so events from any other device are ignored. Empty: no button
             triggers anything; nearby devices are only logged.
+
+    config DASHKIT_CAN_STREAM_ALL
+        bool "CAN stream-all: accept every frame, route in software"
+        default n
+        help
+            Default (off): one exact-match hardware filter per CAN id listed in
+            dbc/used_messages.txt, 32 per bus at most.
+
+            On: the CAN controllers accept every frame. Ids the firmware itself
+            reads or injects go to a dedicated fast-lane FIFO that is always
+            drained first; everything else goes to bulk FIFOs read in chunks.
+            Which frames reach the app is decided in software, so the app can
+            subscribe to any id (CAN filter characteristic) without a firmware
+            change and without the 32-id limit. Statistics are logged every
+            5 s ("stream:" and "route:" lines).
+
+            Experimental: validate vehicle controls on the car before use.
 endmenu

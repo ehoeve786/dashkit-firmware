@@ -5,9 +5,7 @@
 #include "freertos/semphr.h"
 #include "sdkconfig.h"
 
-#ifdef CONFIG_DASHKIT_CAN_STREAM_ALL
 #include "can_route.h"
-#endif
 
 static const char *TAG = "can_filter";
 
@@ -112,7 +110,8 @@ bool can_filter_should_forward(uint8_t bus_id, uint32_t addr)
     size_t count = s_count;
     bool match = (count == 0);  // Empty filter = forward all
     for (size_t i = 0; i < count && !match; i++) {
-        if (s_entries[i].bus_id == bus_id && s_entries[i].addr == addr) {
+        if (s_entries[i].bus_id == bus_id &&
+            (s_entries[i].addr == addr || s_entries[i].addr == CAN_ROUTE_ADDR_ALL)) {
             match = true;
         }
     }

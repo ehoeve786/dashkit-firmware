@@ -10,6 +10,7 @@
 #include "freertos/task.h"
 #include "driver/usb_serial_jtag.h"
 #include <stdio.h>
+#include <stdlib.h>
 #include <stdbool.h>
 #include <string.h>
 
@@ -28,16 +29,31 @@ static QueueHandle_t    s_rx_queue = NULL;
 //  out: chassis-bus (0) frames the C3X can't see, as "F,<id>,<hex>": DAS_lanes 0x239, DAS_carLog 0x5D9,
 //       DAS_autopilotDebug 0x247, UI_gpsVehicleSpeed 0x2F8, APP_frontParkAssistData 0x34B (~35 frames/s). The CAN
 //       RX path only queues them (never blocks; dropped if 16 are already waiting).
-//  in:  "C,7f0,<16 hex>" = openpilot state (COMMA_status), injected for the app as bus 1 frame 0x7F0 (never sent
-//       on CAN; only that id is accepted). No status for 1 s (C3X off or unplugged): one all-zero frame clears it.
+//  in:  "C,<bus>,<id>,<hex>" frames for the app only (never sent on CAN): bus 1 id 0x7F0 = openpilot state
+//       (COMMA_status), bus 2 = the C3X's party bus, bus 3 = its Autopilot side. Anything else, or a line that isn't
+//       exactly one frame (a write cut short on the C3X), is dropped. No status for 1 s (C3X off or unplugged): one
+//       all-zero COMMA_status clears it.
 #define COMMA_ID 0x7F0
 static QueueHandle_t    s_c3x_q = NULL;
 
-static void comma_inject(uint64_t v)
+static bool c3x_line(char *in, int len)
 {
-    can_tagged_frame_t t = { .bus_id = 1, .frame = { .id = COMMA_ID, .dlc = 8 } };
-    for (int i = 0; i < 8; i++) t.frame.data[i] = v >> (56 - 8 * i);
+    unsigned bus;
+    unsigned long id;
+    char hex[17];
+    int n = -1;
+    if (len && in[len - 1] == '\r') in[--len] = 0;
+    if (sscanf(in, "C,%u,%lx,%16[0-9a-fA-F]%n", &bus, &id, hex, &n) != 3 || n != len || id > 0x7FF ||
+        !((bus == 1 && id == COMMA_ID) || bus == 2 || bus == 3)) return false;
+    int hl = strlen(hex);
+    if (hl % 2) return false;
+    can_tagged_frame_t t = { .bus_id = bus, .frame = { .id = id, .dlc = hl / 2 } };
+    for (int i = 0; i < hl / 2; i++) {
+        char h[3] = { hex[2 * i], hex[2 * i + 1], 0 };
+        t.frame.data[i] = strtoul(h, NULL, 16);
+    }
     can_manager_inject(&t);
+    return bus == 1;
 }
 
 static void lanes_task(void *arg)
@@ -52,20 +68,16 @@ static void lanes_task(void *arg)
             for (int i = 0; i < r; i++) {
                 if (b[i] != '\n') { if (il < (int)sizeof(in) - 1) in[il++] = b[i]; continue; }
                 in[il] = 0;
-                unsigned long id;
-                unsigned long long v;
-                if (sscanf(in, "C,%lx,%16llx", &id, &v) == 2 && id == COMMA_ID) {
-                    comma_inject(v);
-                    last_c = esp_timer_get_time();
-                }
+                if (c3x_line(in, il)) last_c = esp_timer_get_time();
                 il = 0;
             }
         }
         if (last_c && esp_timer_get_time() - last_c > 1000000) {
-            comma_inject(0);
+            char z[] = "C,1,7f0,0000000000000000";
+            c3x_line(z, sizeof(z) - 1);
             last_c = 0;
         }
-        if (xQueueReceive(s_c3x_q, &f, pdMS_TO_TICKS(100)) != pdTRUE) continue;
+        if (xQueueReceive(s_c3x_q, &f, pdMS_TO_TICKS(10)) != pdTRUE) continue;  // 10 ms: ~350 C3X lines/s come in
         int n = snprintf(b, sizeof(b), "F,%03lx,", (unsigned long)f.id);
         for (int i = 0; i < f.dlc && i < 8; i++) n += snprintf(b + n, sizeof(b) - n, "%02x", f.data[i]);
         b[n++] = '\n';
@@ -108,7 +120,7 @@ esp_err_t can_manager_init(void)
     if (!s_rx_queue) {
         return ESP_ERR_NO_MEM;
     }
-    usb_serial_jtag_driver_config_t usj = { .tx_buffer_size = 1024, .rx_buffer_size = 256 };
+    usb_serial_jtag_driver_config_t usj = { .tx_buffer_size = 1024, .rx_buffer_size = 4096 };
     s_c3x_q = xQueueCreate(16, sizeof(can_frame_t));
     if (!s_c3x_q || usb_serial_jtag_driver_install(&usj) != ESP_OK || xTaskCreate(lanes_task, "lanes", 3072, NULL, 1, NULL) != pdPASS) {
         return ESP_ERR_NO_MEM;

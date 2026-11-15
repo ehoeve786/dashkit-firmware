@@ -9,6 +9,11 @@
 #include "freertos/queue.h"
 #include <stdbool.h>
 #include <string.h>
+#include "sdkconfig.h"
+
+#ifdef CONFIG_DASHKIT_CAN_STREAM_ALL
+#include "can_route.h"
+#endif
 
 static const char *TAG = "can_mgr";
 
@@ -20,6 +25,56 @@ static can_interface_t *s_interfaces[CAN_MANAGER_MAX_INTERFACES];
 static int              s_iface_count = 0;
 static QueueHandle_t    s_rx_queue = NULL;
 
+#ifdef CONFIG_DASHKIT_CAN_STREAM_ALL
+// Stream-all build: the driver delivers every frame on the bus, so the software
+// route decides per frame (one bit lookup each) whether the firmware uses it
+// and whether the app gets it. Anything else is dropped here, before any work.
+#define ROUTE_REPORT_US  (5 * 1000 * 1000)
+static volatile uint32_t s_seen, s_core, s_forwarded, s_queue_full;
+static uint32_t          s_rep_seen, s_rep_core, s_rep_forwarded, s_rep_queue_full;
+
+static void route_report_cb(void *arg)
+{
+    (void)arg;
+    uint32_t seen = s_seen, core = s_core, fwd = s_forwarded, full = s_queue_full;
+    uint32_t secs = ROUTE_REPORT_US / 1000000;
+    ESP_LOGI(TAG, "route: %lu fps on the buses, %lu fps used by firmware, %lu fps to the app, "
+                  "queue-full drops %lu (+%lu)",
+             (unsigned long)((seen - s_rep_seen) / secs),
+             (unsigned long)((core - s_rep_core) / secs),
+             (unsigned long)((fwd - s_rep_forwarded) / secs),
+             (unsigned long)full, (unsigned long)(full - s_rep_queue_full));
+    s_rep_seen = seen; s_rep_core = core; s_rep_forwarded = fwd; s_rep_queue_full = full;
+}
+
+// Callback invoked by CAN drivers from their RX tasks
+static void on_frame_received(const can_tagged_frame_t *frame, void *user_ctx)
+{
+    (void)user_ctx;
+    if (!s_rx_queue) return;
+    s_seen++;
+    uint8_t route = can_route_classify(frame->bus_id, frame->frame.id, frame->frame.extended);
+    if (!route) return;
+    if (route & CAN_ROUTE_CORE) {
+        // Same order and same frame set as the default build, where the
+        // hardware filters only pass manifest ids.
+        s_core++;
+        dbc_observe_frame(frame);
+        automation_manager_on_frame(frame);
+        vehicle_control_on_frame(frame);
+    }
+    if (!(route & CAN_ROUTE_FORWARD)) return;
+
+    can_tagged_frame_t stamped = *frame;
+    stamped.timestamp_us = (uint32_t)esp_timer_get_time();
+    // Drop frame if queue is full rather than blocking the driver
+    if (xQueueSend(s_rx_queue, &stamped, 0) == pdTRUE) {
+        s_forwarded++;
+    } else {
+        s_queue_full++;
+    }
+}
+#else
 // Callback invoked by CAN drivers from their RX tasks
 static void on_frame_received(const can_tagged_frame_t *frame, void *user_ctx)
 {
@@ -42,6 +97,7 @@ static void on_frame_received(const can_tagged_frame_t *frame, void *user_ctx)
     // Drop frame if queue is full rather than blocking the driver
     xQueueSend(s_rx_queue, &stamped, 0);
 }
+#endif  // CONFIG_DASHKIT_CAN_STREAM_ALL
 
 esp_err_t can_manager_init(void)
 {
@@ -50,6 +106,14 @@ esp_err_t can_manager_init(void)
         return ESP_ERR_NO_MEM;
     }
     s_iface_count = 0;
+#ifdef CONFIG_DASHKIT_CAN_STREAM_ALL
+    can_route_init();
+    const esp_timer_create_args_t rep_args = { .callback = route_report_cb, .name = "can_route" };
+    esp_timer_handle_t rep_timer;
+    if (esp_timer_create(&rep_args, &rep_timer) == ESP_OK) {
+        esp_timer_start_periodic(rep_timer, ROUTE_REPORT_US);
+    }
+#endif
     ESP_LOGI(TAG, "CAN manager initialized (queue depth=%d)", RX_QUEUE_DEPTH);
     return ESP_OK;
 }
@@ -115,9 +179,15 @@ esp_err_t can_manager_send(uint8_t bus_id, const can_frame_t *frame)
 esp_err_t can_manager_inject(const can_tagged_frame_t *frame)
 {
     if (!s_rx_queue) return ESP_ERR_INVALID_STATE;
+#ifdef CONFIG_DASHKIT_CAN_STREAM_ALL
+    if (!(can_route_classify(frame->bus_id, frame->frame.id, frame->frame.extended) & CAN_ROUTE_FORWARD)) {
+        return ESP_OK;  // Silently dropped by filter
+    }
+#else
     if (!can_filter_should_forward(frame->bus_id, frame->frame.id)) {
         return ESP_OK;  // Silently dropped by filter
     }
+#endif
     can_tagged_frame_t stamped = *frame;
     stamped.timestamp_us = (uint32_t)esp_timer_get_time();
     if (xQueueSend(s_rx_queue, &stamped, 0) == pdTRUE) {

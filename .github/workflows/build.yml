@@ -64,11 +64,31 @@ jobs:
           idf.py build
           ccache -s
 
+      # Second configuration: the opt-in stream-all CAN path. Built into its own
+      # directory with its own sdkconfig so it cannot leak into the default one.
+      - name: Build (CAN stream-all)
+        env:
+          IDF_CCACHE_ENABLE: "1"
+          CCACHE_DIR: /home/runner/.ccache
+        run: |
+          . ./esp-idf/export.sh
+          idf.py -B build-stream -D SDKCONFIG=build-stream/sdkconfig \
+                 -D "SDKCONFIG_DEFAULTS=sdkconfig.defaults;sdkconfig.stream" build
+          grep -q '^CONFIG_DASHKIT_CAN_STREAM_ALL=y' build-stream/sdkconfig
+          ccache -s
+
       - name: Upload firmware binary
         uses: actions/upload-artifact@v4
         with:
           name: dashkit-firmware-${{ github.sha }}
           path: build/dashkit-firmware.bin
+          retention-days: 14
+
+      - name: Upload firmware binary (CAN stream-all)
+        uses: actions/upload-artifact@v4
+        with:
+          name: dashkit-firmware-stream-${{ github.sha }}
+          path: build-stream/dashkit-firmware.bin
           retention-days: 14
 
   # Host-side Tesla crypto/session unit tests. No ESP-IDF needed:
@@ -90,6 +110,9 @@ jobs:
         # would fail the regen-drift check below as phantom drift. Bump this
         # pin only together with a full tools/gen_proto.py regeneration.
         run: pip install nanopb==0.4.9.1 grpcio-tools
+
+      - name: Run CAN host tests (DBC engine, stream-all core against a chip model, routing)
+        run: bash tools/test/run_can_stream_test.sh
 
       - name: Verify vendored Tesla protos + generated bindings are in sync
         run: bash tools/check_proto_sync.sh

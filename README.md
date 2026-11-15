@@ -128,10 +128,30 @@ Options under `idf.py menuconfig` → **DashKit**:
 | `CONFIG_DASHKIT_TESLA_BLE` | y | Tesla BLE vehicle-command client |
 | `CONFIG_DASHKIT_BTHOME` | n | BTHome / Shelly BLU button listener |
 | `CONFIG_DASHKIT_BTHOME_ALLOWED` | "" | Comma-separated button addresses allowed to trigger controls (from the "BTHome device … seen" log line) |
+| `CONFIG_DASHKIT_CAN_STREAM_ALL` | n | Accept every CAN frame and route in software (experimental, see below) |
 
 For verbose CAN frame and status logging, uncomment `CONFIG_DASHKIT_DEBUG_LOG=y` in `sdkconfig.defaults`.
 
 Run `idf.py fullclean && idf.py build` after changing options.
+
+### CAN stream-all (experimental)
+
+By default each CAN controller gets one exact-match hardware filter per id in `dbc/used_messages.txt`, 32 per bus at most. `CONFIG_DASHKIT_CAN_STREAM_ALL=y` removes that limit:
+
+- The controllers accept every frame. Ids the firmware itself reads or injects go to a dedicated **fast-lane** FIFO that is always drained first, so vehicle controls see the same frames as before even when the bus is flooded. Everything else goes to four bulk FIFOs, read in chunks of 8.
+- What reaches the app is decided in software. Until the app writes the CAN filter characteristic the manifest ids are forwarded, as in the default build. The app can list any standard id on either bus (`0xFFFFFFFF` = the whole bus) with no firmware change.
+- Transmits take three SPI transfers under a fairly handed-over lock and wait for at most one RX chunk.
+
+Build it next to the default image:
+
+```bash
+idf.py -B build-stream -D SDKCONFIG=build-stream/sdkconfig \
+       -D "SDKCONFIG_DEFAULTS=sdkconfig.defaults;sdkconfig.stream" build
+```
+
+Every 5 s the log shows, per bus, `stream: fast … fps (ovf …) bulk … fps (ovf …) tx … (full …) step max … us` and one `route:` line with what was seen, used and forwarded. Each door unlatch logs how many frames were sent and the delay from the car's `0x1F9` to ours (also in the default build, for comparison). Before relying on it, check on the car that the fast-lane overflow count stays 0 and that every control and automation still works while the app is streaming.
+
+Host tests for this path (no ESP-IDF needed): `bash tools/test/run_can_stream_test.sh`.
 
 ## Project Layout
 

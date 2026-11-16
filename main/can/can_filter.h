@@ -19,6 +19,9 @@
 // frames (i.e. no filtering). If the filter has any entries, only frames
 // whose (bus_id, addr) exactly match an entry are forwarded.
 
+// Whole-bus entry (the app's "Log every frame"): every frame on that bus is forwarded.
+#define CAN_FILTER_ADDR_ALL 0xFFFFFFFFu
+
 esp_err_t can_filter_init(void);
 
 // Replace the current filter with the rules encoded in `data`. Passing

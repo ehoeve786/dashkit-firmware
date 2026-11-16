@@ -308,6 +308,10 @@ static uint8_t fit_filters(const uint16_t *in, int n, uint32_t *obj, uint32_t *m
     if (n > FLT_MAX_IDS) n = FLT_MAX_IDS;
     memcpy(ids, in, n * sizeof(*ids));
     qsort(ids, n, sizeof(*ids), cmp_u16);
+    if (n && ids[n - 1] == 0xFFFF) {  // whole bus (sorted last): one filter that accepts everything
+        obj[0] = mask[0] = 0;
+        return 1;
+    }
     for (int i = 0; i < n; i++) {
         if (ids[i] > 0x7FF || (k && o[k - 1] == ids[i])) continue;
         o[k] = ids[i]; m[k] = 0x7FF; cnt[k++] = 1;

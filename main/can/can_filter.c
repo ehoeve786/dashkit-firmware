@@ -99,7 +99,7 @@ bool can_filter_should_forward(uint8_t bus_id, uint32_t addr)
     size_t count = s_count;
     bool match = (count == 0);  // Empty filter = forward all
     for (size_t i = 0; i < count && !match; i++) {
-        if (s_entries[i].bus_id == bus_id && s_entries[i].addr == addr) {
+        if (s_entries[i].bus_id == bus_id && (s_entries[i].addr == addr || s_entries[i].addr == CAN_FILTER_ADDR_ALL)) {
             match = true;
         }
     }
@@ -113,7 +113,8 @@ size_t can_filter_ids(uint8_t bus_id, uint16_t *out, size_t max)
     if (!s_lock) return 0;
     xSemaphoreTake(s_lock, portMAX_DELAY);
     for (size_t i = 0; i < s_count && k < max; i++)
-        if (s_entries[i].bus_id == bus_id && s_entries[i].addr <= 0x7FF) out[k++] = s_entries[i].addr;
+        if (s_entries[i].bus_id == bus_id && (s_entries[i].addr <= 0x7FF || s_entries[i].addr == CAN_FILTER_ADDR_ALL))
+            out[k++] = (uint16_t)s_entries[i].addr;  // ALL arrives as 0xFFFF
     xSemaphoreGive(s_lock);
     return k;
 }

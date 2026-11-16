@@ -31,7 +31,7 @@ static QueueHandle_t    s_rx_queue = NULL;
 //       RX path only queues them (never blocks; dropped if 16 are already waiting).
 //  in:  "C,<bus>,<id>,<hex>" frames for the app only (never sent on CAN): bus 1 id 0x7F0 = openpilot state
 //       (COMMA_status), bus 2 = the C3X's party bus, bus 3 = its Autopilot side. Anything else, or a line that isn't
-//       exactly one frame (a write cut short on the C3X), is dropped. No status for 1 s (C3X off or unplugged): one
+//       exactly one frame (a write cut short on the C3X), is dropped. No status for 2 s (C3X off or unplugged): one
 //       all-zero COMMA_status clears it.
 #define COMMA_ID 0x7F0
 static QueueHandle_t    s_c3x_q = NULL;
@@ -72,7 +72,7 @@ static void lanes_task(void *arg)
                 il = 0;
             }
         }
-        if (last_c && esp_timer_get_time() - last_c > 1000000) {
+        if (last_c && esp_timer_get_time() - last_c > 2000000) {
             char z[] = "C,1,7f0,0000000000000000";
             c3x_line(z, sizeof(z) - 1);
             last_c = 0;

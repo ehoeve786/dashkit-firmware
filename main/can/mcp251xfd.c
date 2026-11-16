@@ -423,9 +423,17 @@ static void overflow_report_cb(void *arg)
              (long long)(RX_OVERFLOW_REPORT_US / 1000000));
 }
 
+static esp_err_t iface_init(can_interface_t *self);
+
+// No frame for this long: the car is asleep, or the chip lost its setup (it stopped receiving after the car slept
+// and woke until the DashKit rebooted). Re-initialising is SPI-only (no loopback test, nothing sent on the bus), so
+// repeating it while the car sleeps is harmless.
+#define RX_RECOVER_US (5 * 1000000LL)
+
 static void rx_task(void *arg)
 {
     mcp251xfd_ctx_t *ctx = (mcp251xfd_ctx_t *)arg;
+    int64_t last_rx = esp_timer_get_time();
 #ifdef CONFIG_DASHKIT_DEBUG_LOG
     uint32_t poll_count = 0;
 #endif
@@ -442,8 +450,15 @@ static void rx_task(void *arg)
         // FIFO clears RXIF, which releases INT.
         uint32_t intflag;
         read_reg32(ctx, REG_C1INT, &intflag);
+        int64_t now = esp_timer_get_time();
         if (intflag & C1INT_RXIF) {
             read_rx_fifo(ctx);
+            last_rx = now;
+        } else if (now - last_rx > RX_RECOVER_US) {
+            can_interface_t self = { .ctx = ctx };
+            if (iface_init(&self) != ESP_OK || set_mode(ctx, OPMODE_NORMAL_2_0) != ESP_OK)
+                ESP_LOGW(TAG, "Bus %d: re-init failed", ctx->bus_id);
+            last_rx = now;
         }
 
 #ifdef CONFIG_DASHKIT_DEBUG_LOG

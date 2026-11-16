@@ -201,3 +201,21 @@ esp_err_t can_manager_inject(const can_tagged_frame_t *frame)
     }
     return ESP_ERR_NO_MEM;
 }
+
+// Hardware filters per bus = the firmware's own IDs + the ones the app asked for (no 32-ID limit: the driver merges
+// them into masks). Called from the BLE task whenever the app's filter changes.
+void can_manager_apply_filters(void)
+{
+    static uint16_t ids[320];
+    for (int i = 0; i < s_iface_count; i++) {
+        can_interface_t *f = s_interfaces[i];
+        if (!f->set_ids) continue;
+        size_t n = 0;
+        if (f->bus_id < DBC_HW_FILTER_BUS_COUNT) {
+            const dbc_hw_filter_set_t *fs = &g_dbc_hw_filters[f->bus_id];
+            for (; n < fs->count && n < 64; n++) ids[n] = fs->ids[n];
+        }
+        n += can_filter_ids(f->bus_id, ids + n, sizeof(ids) / sizeof(*ids) - n);
+        f->set_ids(f, ids, n);
+    }
+}

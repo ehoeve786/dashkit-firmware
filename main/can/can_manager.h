@@ -8,6 +8,9 @@
 // Initialize the CAN manager (creates the shared frame queue)
 esp_err_t can_manager_init(void);
 
+// Re-fits every bus's hardware filters to the firmware's IDs plus the app's current filter.
+void can_manager_apply_filters(void);
+
 // Register a CAN interface with the manager. Takes ownership of lifecycle.
 esp_err_t can_manager_add_interface(can_interface_t *iface);
 

@@ -28,3 +28,6 @@ esp_err_t can_filter_set(const uint8_t *data, size_t len);
 // Return true if a frame on `bus_id` with arbitration id `addr` should be
 // forwarded to the BLE client.
 bool can_filter_should_forward(uint8_t bus_id, uint32_t addr);
+
+// Copies up to `max` of the standard IDs the app asked for on `bus_id` into `out`; returns how many.
+size_t can_filter_ids(uint8_t bus_id, uint16_t *out, size_t max);

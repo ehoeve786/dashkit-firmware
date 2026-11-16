@@ -6,6 +6,7 @@
 #include "freertos/task.h"
 #include "freertos/semphr.h"
 #include <stdbool.h>
+#include <stdlib.h>
 #include <string.h>
 
 static const char *TAG = "mcp251xfd";
@@ -108,6 +109,11 @@ typedef struct {
     volatile uint32_t   rx_overflow_events;
     uint32_t            rx_overflow_reported;  // last value the timer logged
     esp_timer_handle_t  overflow_timer;
+    // Hardware acceptance filters (obj, mask) in use, and the next set waiting for rx_task to program.
+    uint32_t            flt_obj[32], flt_mask[32], pend_obj[32], pend_mask[32];
+    uint8_t             flt_n, pend_n;
+    volatile bool       flt_dirty;
+    portMUX_TYPE        flt_mux;
 } mcp251xfd_ctx_t;
 
 // ---------------------------------------------------------------------------
@@ -287,6 +293,70 @@ static esp_err_t configure_bitrate(mcp251xfd_ctx_t *ctx)
     return ESP_OK;
 }
 
+// ---- Hardware acceptance filtering ----
+// The chip has 32 filters. Any number of IDs fits: sorted neighbours are merged into one masked filter, always the
+// pair that lets the fewest unwanted IDs through, until 32 remain. Extras the masks let in are dropped in software
+// (can_filter for the app; firmware consumers ignore IDs they don't know). Linear per merge, so ~0.1 ms for 300 IDs.
+#define FLT_MAX_IDS 320
+static int cmp_u16(const void *a, const void *b) { return *(const uint16_t *)a - *(const uint16_t *)b; }
+
+static uint8_t fit_filters(const uint16_t *in, int n, uint32_t *obj, uint32_t *mask)
+{
+    static uint16_t ids[FLT_MAX_IDS], cnt[FLT_MAX_IDS];  // callers run one at a time (BLE task, or create at boot)
+    static uint32_t o[FLT_MAX_IDS], m[FLT_MAX_IDS];
+    int k = 0;
+    if (n > FLT_MAX_IDS) n = FLT_MAX_IDS;
+    memcpy(ids, in, n * sizeof(*ids));
+    qsort(ids, n, sizeof(*ids), cmp_u16);
+    for (int i = 0; i < n; i++) {
+        if (ids[i] > 0x7FF || (k && o[k - 1] == ids[i])) continue;
+        o[k] = ids[i]; m[k] = 0x7FF; cnt[k++] = 1;
+    }
+    while (k > 32) {
+        int best = 0; uint32_t bm = 0; int bc = 1 << 30;
+        for (int i = 0; i + 1 < k; i++) {
+            uint32_t mm = m[i] & m[i + 1] & ~(o[i] ^ o[i + 1]) & 0x7FF;
+            int c = (1 << (11 - __builtin_popcount(mm))) - cnt[i] - cnt[i + 1];
+            if (c < bc) { bc = c; best = i; bm = mm; }
+        }
+        m[best] = bm; o[best] &= bm; cnt[best] += cnt[best + 1];
+        k--;
+        memmove(&o[best + 1], &o[best + 2], (k - best - 1) * sizeof(*o));
+        memmove(&m[best + 1], &m[best + 2], (k - best - 1) * sizeof(*m));
+        memmove(&cnt[best + 1], &cnt[best + 2], (k - best - 1) * sizeof(*cnt));
+    }
+    memcpy(obj, o, k * sizeof(*o));
+    memcpy(mask, m, k * sizeof(*m));
+    return k;
+}
+
+// Filters may be changed while running if disabled first (datasheet 4.5.4): all off, rewrite, enable the used ones.
+static void program_filters(mcp251xfd_ctx_t *ctx)
+{
+    uint32_t words[8] = {0};  // 4 filters per FLTCON word: FLTEN | FIFO 1
+    for (int w = 0; w < 8; w++) write_reg32(ctx, REG_C1FLTCON(w), 0);
+    for (int i = 0; i < ctx->flt_n; i++) {
+        write_reg32(ctx, REG_C1FLTOBJ(i), ctx->flt_obj[i]);
+        write_reg32(ctx, REG_C1MASK(i), ctx->flt_mask[i]);
+        words[i / 4] |= 0x81u << ((i % 4) * 8);
+    }
+    for (int w = 0; w * 4 < ctx->flt_n; w++) write_reg32(ctx, REG_C1FLTCON(w), words[w]);
+    ESP_LOGI(TAG, "Bus %u: %u HW RX filters programmed", (unsigned)ctx->bus_id, (unsigned)ctx->flt_n);
+}
+
+static void iface_set_ids(can_interface_t *self, const uint16_t *ids, int n)
+{
+    mcp251xfd_ctx_t *ctx = (mcp251xfd_ctx_t *)self->ctx;
+    static uint32_t obj[32], mask[32];
+    uint8_t k = fit_filters(ids, n, obj, mask);
+    taskENTER_CRITICAL(&ctx->flt_mux);
+    memcpy(ctx->pend_obj, obj, sizeof(obj));
+    memcpy(ctx->pend_mask, mask, sizeof(mask));
+    ctx->pend_n = k;
+    ctx->flt_dirty = true;  // rx_task owns the chip: it programs them
+    taskEXIT_CRITICAL(&ctx->flt_mux);
+}
+
 static esp_err_t configure_fifos(mcp251xfd_ctx_t *ctx)
 {
     // FIFO 1: RX FIFO - 32 messages deep (max for FSIZE field), 8 byte payload.
@@ -306,26 +376,7 @@ static esp_err_t configure_fifos(mcp251xfd_ctx_t *ctx)
     err = write_reg32(ctx, REG_C1FIFOCON(2), txfifo_con);
     if (err != ESP_OK) return err;
 
-    // ---- Hardware acceptance filtering ----
-    const dbc_hw_filter_set_t *fs =
-        (ctx->bus_id < DBC_HW_FILTER_BUS_COUNT) ? &g_dbc_hw_filters[ctx->bus_id]
-                                                : NULL;
-    uint8_t n = fs ? fs->count : 0;
-    if (n > 32) n = 32;
-
-    uint32_t fltcon_words[8] = {0};  // 32 filters / 4 per word
-    for (uint8_t i = 0; i < n; i++) {
-        write_reg32(ctx, REG_C1FLTOBJ(i), fs->ids[i]);
-        write_reg32(ctx, REG_C1MASK(i), 0x7FF);
-        fltcon_words[i / 4] |= (uint32_t)0x81u << ((i % 4) * 8);
-    }
-    for (uint8_t w = 0; (uint16_t)w * 4 < n; w++) {
-        write_reg32(ctx, REG_C1FLTCON(w), fltcon_words[w]);
-    }
-
-    ESP_LOGI(TAG, "Bus %u: %u HW RX filters programmed", (unsigned)ctx->bus_id,
-             (unsigned)n);
-
+    program_filters(ctx);
     return ESP_OK;
 }
 
@@ -444,6 +495,16 @@ static void rx_task(void *arg)
         // FIFO if an interrupt is ever missed (e.g. semaphore lost during init,
         // or INT line already low when we enabled the IRQ).
         xSemaphoreTake(ctx->int_sem, pdMS_TO_TICKS(5));
+
+        if (ctx->flt_dirty) {
+            taskENTER_CRITICAL(&ctx->flt_mux);
+            memcpy(ctx->flt_obj, ctx->pend_obj, sizeof(ctx->flt_obj));
+            memcpy(ctx->flt_mask, ctx->pend_mask, sizeof(ctx->flt_mask));
+            ctx->flt_n = ctx->pend_n;
+            ctx->flt_dirty = false;
+            taskEXIT_CRITICAL(&ctx->flt_mux);
+            program_filters(ctx);
+        }
 
         // INT is level-sensitive on the MCP2518FD: it stays asserted as long
         // as RXIF is set, so we drain the whole FIFO in one go. Reading the
@@ -808,6 +869,11 @@ can_interface_t *mcp251xfd_create(const mcp251xfd_config_t *config)
     ctx->running = false;
     ctx->int_sem = xSemaphoreCreateBinary();
     ctx->spi_mutex = xSemaphoreCreateMutex();
+    portMUX_INITIALIZE(&ctx->flt_mux);
+    // Until the app asks for more: the firmware's own IDs (dbc/used_messages.txt).
+    if (ctx->bus_id < DBC_HW_FILTER_BUS_COUNT)
+        ctx->flt_n = fit_filters(g_dbc_hw_filters[ctx->bus_id].ids, g_dbc_hw_filters[ctx->bus_id].count,
+                                 ctx->flt_obj, ctx->flt_mask);
 
     // Initialize SPI bus
     spi_bus_config_t bus_cfg = {
@@ -850,6 +916,7 @@ can_interface_t *mcp251xfd_create(const mcp251xfd_config_t *config)
     iface->stop = iface_stop;
     iface->send = iface_send;
     iface->set_rx_callback = iface_set_rx_callback;
+    iface->set_ids = iface_set_ids;
     iface->bus_id = config->bus_id;
     iface->ctx = ctx;
 

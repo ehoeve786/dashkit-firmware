@@ -1,4 +1,5 @@
 #include "can_filter.h"
+#include "can_manager.h"
 
 #include "esp_log.h"
 #include "freertos/FreeRTOS.h"
@@ -75,6 +76,7 @@ esp_err_t can_filter_set(const uint8_t *data, size_t len)
 
     s_count = new_count;
     xSemaphoreGive(s_lock);
+    can_manager_apply_filters();
 
     ESP_LOGI(TAG, "Filter updated from %u-byte write: %u entries%s",
              (unsigned)len, (unsigned)new_count,
@@ -103,4 +105,15 @@ bool can_filter_should_forward(uint8_t bus_id, uint32_t addr)
     }
     xSemaphoreGive(s_lock);
     return match;
+}
+
+size_t can_filter_ids(uint8_t bus_id, uint16_t *out, size_t max)
+{
+    size_t k = 0;
+    if (!s_lock) return 0;
+    xSemaphoreTake(s_lock, portMAX_DELAY);
+    for (size_t i = 0; i < s_count && k < max; i++)
+        if (s_entries[i].bus_id == bus_id && s_entries[i].addr <= 0x7FF) out[k++] = s_entries[i].addr;
+    xSemaphoreGive(s_lock);
+    return k;
 }

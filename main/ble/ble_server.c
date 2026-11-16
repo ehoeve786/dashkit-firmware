@@ -608,7 +608,7 @@ static int gatt_filter_access(uint16_t conn_handle, uint16_t attr_handle,
     }
 
     uint16_t len = OS_MBUF_PKTLEN(ctxt->om);
-    uint8_t buf[256];
+    static uint8_t buf[512];  // ATT max attribute length; static: the BLE host task's stack is small
     if (len > sizeof(buf)) {
         ESP_LOGW(TAG, "Filter write too large (%u bytes)", len);
         return BLE_ATT_ERR_INVALID_ATTR_VALUE_LEN;

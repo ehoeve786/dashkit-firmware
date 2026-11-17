@@ -102,9 +102,9 @@ def generate(dbc_path, manifest_path, out_c, out_h):
     messages = [by_name[e["name"]] for e in decode_entries]
     bus_of = {e["name"]: e["bus"] for e in decode_entries}
 
-    # Per-bus HW acceptance-filter ID lists: every manifest entry (decode +
-    # filter), grouped by its bus, de-duplicated, in file order. Consumed by the
-    # MCP251xFD driver to program one exact-match filter per accepted ID.
+    # Per-bus id lists: every manifest entry (decode + filter), grouped by its
+    # bus, de-duplicated, in file order. The MCP251xFD driver receives these
+    # until the app sends its own list (fitted into the controller's filters).
     NUM_BUSES = 2
     hw_filter_ids = [[] for _ in range(NUM_BUSES)]
     for e in manifest:
@@ -112,10 +112,11 @@ def generate(dbc_path, manifest_path, out_c, out_h):
         lst = hw_filter_ids[e["bus"]]
         if sid not in lst:
             lst.append(sid)
-    for b, lst in enumerate(hw_filter_ids):
-        if len(lst) > 32:
-            sys.stderr.write("error: bus %d needs %d HW filters (max 32)\n"
-                             % (b, len(lst)))
+    # Decoded messages get exact fast-lane filters: 28 per bus (MCPFD_MAX_FAST_IDS).
+    for b in range(NUM_BUSES):
+        n = sum(1 for e in decode_entries if e["bus"] == b)
+        if n > 28:
+            sys.stderr.write("error: bus %d has %d decoded messages (max 28)\n" % (b, n))
             sys.exit(1)
 
     # First pass: flatten signals (sorted by start bit) and assign global indices.

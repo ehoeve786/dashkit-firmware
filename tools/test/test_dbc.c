@@ -71,7 +71,8 @@ int main(void)
 {
     dbc_init();
 
-    // Filter-only ambient candidate must reach BLE on Vehicle CAN only.
+    // The manifest holds only what the firmware decodes: app-only messages such as ambient lighting (0x679)
+    // reach BLE because the app lists them, and decoded messages fit the fast lane (28 per bus).
     {
         for (unsigned bus = 0; bus < DBC_HW_FILTER_BUS_COUNT; bus++) {
             unsigned matches = 0;
@@ -79,7 +80,7 @@ int main(void)
             for (unsigned i = 0; i < fs->count; i++) {
                 if (fs->ids[i] == 0x679) matches++;
             }
-            CHECK(matches == (bus == 1 ? 1u : 0u) && fs->count <= 32,
+            CHECK(matches == 0 && fs->count <= 28,
                   "ambient RX filter bus %u: %u matches, %u slots",
                   bus, matches, fs->count);
         }

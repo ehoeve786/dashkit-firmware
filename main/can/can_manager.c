@@ -225,6 +225,7 @@ esp_err_t can_manager_inject(const can_tagged_frame_t *frame)
 void can_manager_apply_filters(void)
 {
     static uint16_t ids[320];
+    s_bulk_gap_ms = 0;  // a new subscription starts unthinned; the gap only decays while bulk frames flow
     for (int i = 0; i < s_iface_count; i++) {
         can_interface_t *f = s_interfaces[i];
         if (!f->set_ids) continue;

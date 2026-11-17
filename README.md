@@ -133,14 +133,14 @@ Run `idf.py fullclean && idf.py build` after changing options.
 
 ### CAN reception
 
-The app chooses which CAN ids it gets, with no firmware change and no limit from the controllers' 32 hardware filters:
+Both CAN controllers receive their bus in full, so no list of messages has to be maintained anywhere:
 
-- Ids the firmware itself reads or injects have exact filters into a dedicated **fast-lane** FIFO that is always drained first, so vehicle controls see their frames even when the bus is flooded.
-- The remaining filters feed four bulk FIFOs, read in chunks of 8. They take the ids in `dbc/used_messages.txt` plus whatever the app lists in the CAN filter characteristic (any standard id on either bus); when there are more ids than filters, neighbours share a masked filter and the extras are dropped in software. The controller never sees the rest of the bus.
-- When the app lists `0xFFFFFFFF` for a bus (DashPilot's **Log every frame**), the bulk FIFOs take every frame on it. Frames the app asked for by id still go first over BLE.
-- Until the app writes the characteristic, and after it disconnects, the manifest ids are received and forwarded.
+- **Firmware:** every little-endian message in the DBC is generated into `dbc_generated.{c,h}`, and the latest frame of each is cached per bus. An automation reads or sends any of them by name (`can_get`, `can_send`, …) with nothing to register.
+- **App:** only the ids the app lists in the CAN filter characteristic are forwarded over BLE (any standard id on either bus, no limit from the controllers' 32 hardware filters). Nothing is forwarded until the app writes its list, and nothing after it disconnects. Adding a message to the app's car state needs no firmware change.
+- **Priority lane:** messages firmware code has read, then the ids the app asked for, get exact filters (28 per bus) into a dedicated FIFO that is always drained first, so the rest of the bus can never crowd them out. The set is built at run time from what is actually read; everything else arrives through four bulk FIFOs, read in chunks of 8.
+- When the app lists `0xFFFFFFFF` for a bus (DashPilot's developer option **Log every frame**), every frame on it is forwarded too. Frames the app asked for by id still go first over BLE.
 
-Every 5 s the log shows, per bus, `stream: fast … fps (ovf …) bulk … fps (ovf …) tx … (full …) step max … us` and one `route:` line with what was seen, used and forwarded. The fast-lane overflow count must stay 0.
+Every 5 s the log shows, per bus, `stream: fast … fps (ovf …) bulk … fps (ovf …) tx … (full …) step max … us` and one `route:` line with what was seen, known to the DBC and forwarded. The fast-lane overflow count must stay 0.
 
 Host tests for this path (no ESP-IDF needed): `bash tools/test/run_can_stream_test.sh`.
 
@@ -159,7 +159,7 @@ Control opcode `0x51` (value 1/0) makes the firmware add diagnostic records to t
 | `main/tesla/` | Tesla BLE key enrollment and vehicle-command client |
 | `main/bthome/` | BTHome button listener |
 | `components/tesla-protocol/` | Tesla vehicle-command crypto, session, protobufs |
-| `dbc/` | Vehicle DBC and the `used_messages.txt` manifest |
+| `dbc/` | Vehicle DBC |
 | `tools/` | DBC/proto codegen, host tests, OTA publishing |
 
 The DBC tables (`main/can/dbc/dbc_generated.{c,h}`) are generated from `dbc/used_messages.txt` and committed. If `tools/.venv` exists, `idf.py build` regenerates them automatically:

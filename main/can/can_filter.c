@@ -79,18 +79,18 @@ esp_err_t can_filter_set(const uint8_t *data, size_t len)
 
     s_count = new_count;
     // The per-frame decision is made by can_route (lock-free bit lookups), so mirror the accepted list into it.
-    // An empty list returns to the default of forwarding the manifest ids.
+    // An empty list forwards nothing.
     can_route_forward_begin();
     for (size_t i = 0; i < new_count; i++) {
         can_route_forward_add(s_entries[i].bus_id, s_entries[i].addr);
     }
-    can_route_forward_commit(new_count);
+    can_route_forward_commit();
     xSemaphoreGive(s_lock);
     can_manager_apply_filters();
 
     ESP_LOGI(TAG, "Filter updated from %u-byte write: %u entries%s",
              (unsigned)len, (unsigned)new_count,
-             new_count == 0 ? " (pass-through)" : "");
+             new_count == 0 ? " (nothing forwarded)" : "");
     for (size_t i = 0; i < new_count; i++) {
         // Safe to read s_entries here without the lock: only this task
         // (the BLE host task) ever writes to the table.
@@ -107,8 +107,8 @@ size_t can_filter_ids(uint8_t bus_id, uint16_t *out, size_t max)
     if (!s_lock) return 0;
     xSemaphoreTake(s_lock, portMAX_DELAY);
     for (size_t i = 0; i < s_count && k < max; i++)
-        if (s_entries[i].bus_id == bus_id && (s_entries[i].addr <= 0x7FF || s_entries[i].addr == CAN_ROUTE_ADDR_ALL))
-            out[k++] = (uint16_t)s_entries[i].addr;  // ALL arrives as 0xFFFF
+        if (s_entries[i].bus_id == bus_id && s_entries[i].addr <= 0x7FF)
+            out[k++] = (uint16_t)s_entries[i].addr;
     xSemaphoreGive(s_lock);
     return k;
 }

@@ -98,7 +98,7 @@ static void wiper_off_on_frame(automation_t *self, const can_tagged_frame_t *fra
 
     // DAS_wiperSpeed: 0 = AUTO, 1..14 = manual speeds, 15 = OFF.
     double speed;
-    if (can_get(frame->bus_id, "DAS_bodyControls", "DAS_wiperSpeed", &speed, false) != ESP_OK) {
+    if (can_get(BUS, "DAS_bodyControls", "DAS_wiperSpeed", &speed, false) != ESP_OK) {
         return;
     }
     int s = (int)speed;

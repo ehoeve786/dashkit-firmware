@@ -29,10 +29,11 @@
 #define CAN_DIAG_ID_STREAM_TX 0x1DA50002u
 // Since boot: [0..1] stale head index  [2..3] layout fallbacks  [4..5] desyncs  [6..7] SPI errors
 #define CAN_DIAG_ID_STREAM_ERR 0x1DA50003u
-// Since boot: [0..1] fast-lane ids that arrived through a bulk lane
+// Since boot: [0..1] fast-lane ids that arrived through a bulk lane (a few are normal right after the
+// priority ids change: frames already waiting in a bulk lane)
 #define CAN_DIAG_ID_STREAM_MISROUTE 0x1DA50005u
 // Both buses, last 5 s unless noted: [0..1] frames/s seen
-// [2..3] frames/s used by the firmware  [4..5] frames/s queued for the app
+// [2..3] frames/s that are DBC messages  [4..5] frames/s queued for the app
 // [6..7] frames dropped because the app queue was full, since boot
 #define CAN_DIAG_ID_ROUTE     0x1DA50010u
 // One per door unlatch command: [0] door 0..3, bit 7 set = refused by the

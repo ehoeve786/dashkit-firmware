@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Host tests for the CAN path: the
 # chunked MCP251xFD receive/transmit core against a chip model, and the software
-# routing against the generated manifest tables. Also runs the DBC engine test.
+# routing. Also runs the DBC engine test.
 #
 # Requires: gcc.
 set -euo pipefail
@@ -26,6 +26,5 @@ cc -std=gnu11 -Wall -Wextra -Werror -fsanitize=address,undefined -fno-sanitize-r
    "${SCRIPT_DIR}/test_can_stream.c" \
    "${REPO_ROOT}/main/can/mcp251xfd_stream.c" \
    "${REPO_ROOT}/main/can/can_route.c" \
-   "${REPO_ROOT}/main/can/dbc/dbc_generated.c" \
    -o "${OUT}/test_can_stream"
 "${OUT}/test_can_stream"

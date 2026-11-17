@@ -2,15 +2,14 @@
 
 // MCP251xFD receive/transmit core.
 //
-// The chip has 32 hardware filters and 2 KB of message RAM. This core uses them so that neither limits which CAN
-// ids the app can ask for, or how much of the bus it can log:
+// The chip has 32 hardware filters and 2 KB of message RAM. This core receives the whole bus with them, so
+// neither limits which CAN messages the firmware or the app can use:
 //
-//   * Frames the firmware itself acts on (the "fast lane": every message the DBC engine decodes or injects) get
-//     exact filters into their own FIFO, which is always drained first. A flood on the bulk lanes can only
-//     overflow the bulk lanes, never the fast lane.
-//   * The remaining filters feed four bulk FIFOs with either the ids the app and the firmware asked for (any
-//     number: neighbours share a masked filter) or, while the app logs every frame, the whole bus. What is
-//     forwarded is decided in software afterwards (can_route), so a masked filter may let extra ids through.
+//   * Frames somebody is known to use (the "fast lane": messages firmware code reads, then the ids the app asked
+//     for) get exact filters into their own FIFO, which is always drained first. A flood on the bulk lanes can
+//     only overflow the bulk lanes, never the fast lane.
+//   * Four more filters spread every other frame over four bulk FIFOs. What is forwarded to the app is decided
+//     in software afterwards (can_route).
 //   * Frames are read in chunks: one status read, one RAM read for up to MCPFD_CHUNK messages, one pointer
 //     increment per message.
 //
@@ -114,15 +113,11 @@ esp_err_t mcpfd_stream_config_fifos(mcpfd_stream_t *s);
 esp_err_t mcpfd_stream_filters_accept_all_fast(mcpfd_stream_t *s);
 
 // Program the real filters. Allowed in normal mode too: every filter is disabled before it is rewritten, at the
-// cost of the frames that arrive during the ~70 register writes. `fast_ids` are 11-bit standard ids, each an exact
-// filter into the fast lane; anything beyond MCPFD_MAX_FAST_IDS is not prioritised, and the count that fit is
-// returned through *used when it is not NULL. What else is received depends on n:
-//   n <  0: every other frame on the bus (the app is logging every frame)
-//   n >= 0: only what the n masked filters obj/mask accept (the ids the app and the firmware asked for, see
-//           fit_filters in mcp251xfd.c). The chip then never sees the rest of the bus. If they do not fit behind
-//           the fast-lane filters, every frame is received instead.
-esp_err_t mcpfd_stream_filters_program(mcpfd_stream_t *s, const uint16_t *fast_ids, size_t count,
-                                       const uint32_t *obj, const uint32_t *mask, int n, size_t *used);
+// cost of the frames that arrive during the register writes (and a frame already waiting in a bulk lane may be
+// delivered after a newer one of the same id from the fast lane, once). `fast_ids` are 11-bit standard ids, each an exact
+// filter into the fast lane (duplicates and anything beyond MCPFD_MAX_FAST_IDS are skipped). Every other frame on
+// the bus goes to the bulk lanes.
+esp_err_t mcpfd_stream_filters_program(mcpfd_stream_t *s, const uint16_t *fast_ids, size_t count);
 
 // Drop everything waiting in the RX FIFOs.
 esp_err_t mcpfd_stream_reset_rx(mcpfd_stream_t *s);

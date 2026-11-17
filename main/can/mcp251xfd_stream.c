@@ -135,8 +135,7 @@ esp_err_t mcpfd_stream_filters_accept_all_fast(mcpfd_stream_t *s)
     return err;
 }
 
-esp_err_t mcpfd_stream_filters_program(mcpfd_stream_t *s, const uint16_t *fast_ids, size_t count,
-                                       const uint32_t *obj, const uint32_t *mask, int n, size_t *used)
+esp_err_t mcpfd_stream_filters_program(mcpfd_stream_t *s, const uint16_t *fast_ids, size_t count)
 {
     uint32_t con[MCPFD_FILTERS / 4] = {0};
     int f = 0;
@@ -155,17 +154,13 @@ esp_err_t mcpfd_stream_filters_program(mcpfd_stream_t *s, const uint16_t *fast_i
         s->fast_ids[id >> 5] |= 1u << (id & 31);
         f++;
     }
-    if (used) *used = (size_t)f;
 
-    // Then the bulk lanes. Whole bus (also when the fitted set has no room, so nothing asked for is ever lost):
-    // four filters on the two low id bits. Fitted: the given masked filters, one lane each in turn. Either way a
-    // given id always lands in the same lane, so per-id ordering is preserved.
-    bool all = n < 0 || n > MCPFD_FILTERS - f;
-    if (all) n = MCPFD_BULK_LANES;
-    for (int k = 0; k < n && err == ESP_OK; k++, f++) {
-        err = reg_write32(s, REG_C1FLTOBJ(f), all ? (uint32_t)k : obj[k]);
-        if (err == ESP_OK) err = reg_write32(s, REG_C1MASK(f), all ? MASK_SID_LOW2 : mask[k] & MASK_SID_ALL);
-        con[f / 4] |= FLT_ENABLE(MCPFD_FIFO_BULK0 + k % MCPFD_BULK_LANES) << ((f % 4) * 8);
+    // Then everything else: four filters on the two low id bits, one bulk lane each, so a given id always lands
+    // in the same lane and per-id ordering is preserved.
+    for (int k = 0; k < MCPFD_BULK_LANES && err == ESP_OK; k++, f++) {
+        err = reg_write32(s, REG_C1FLTOBJ(f), (uint32_t)k);
+        if (err == ESP_OK) err = reg_write32(s, REG_C1MASK(f), MASK_SID_LOW2);
+        con[f / 4] |= FLT_ENABLE(MCPFD_FIFO_BULK0 + k) << ((f % 4) * 8);
     }
 
     for (int w = 0; w < MCPFD_FILTERS / 4 && err == ESP_OK; w++) {

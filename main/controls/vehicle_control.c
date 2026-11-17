@@ -188,7 +188,7 @@ static void rear_fan_toggle(void)
 static int gear(void)
 {
     double g;
-    if (!can_msg_fresh("DI_systemStatus", DI_FRESH_MS)) {
+    if (!can_msg_fresh(GEAR_BUS, "DI_systemStatus", DI_FRESH_MS)) {
         return -1;
     }
     return can_get(GEAR_BUS, "DI_systemStatus", "DI_gear", &g, false) == ESP_OK ? (int)g : -1;
@@ -211,8 +211,8 @@ static void door_unlatch(uint16_t door)
     // frames (DI asleep, DashKit restarted while it sleeps, or the chassis bus
     // gone quiet), fail closed unless both parking-brake calipers report PARK.
     double g = -1, kph = -1, l = -1, r = -1;
-    bool di = can_msg_fresh("DI_systemStatus", DI_FRESH_MS)
-           && can_msg_fresh("DI_speed", DI_FRESH_MS)
+    bool di = can_msg_fresh(GEAR_BUS, "DI_systemStatus", DI_FRESH_MS)
+           && can_msg_fresh(GEAR_BUS, "DI_speed", DI_FRESH_MS)
            && can_get(GEAR_BUS, "DI_systemStatus", "DI_gear", &g, false) == ESP_OK
            && can_get(GEAR_BUS, "DI_speed", "DI_vehicleSpeed", &kph, true) == ESP_OK;
     bool refuse = di ? ((int)g == GEAR_REVERSE || (int)g == GEAR_NEUTRAL || (int)g == GEAR_DRIVE || kph > 0.5)

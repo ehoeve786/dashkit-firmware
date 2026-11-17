@@ -174,7 +174,7 @@ static void multi_finger_on_frame(automation_t *self, const can_tagged_frame_t *
     (void)self;
 
     double points_d;
-    if (can_get(frame->bus_id, "UI_status2", "UI_activeTouchPoints", &points_d, false) != ESP_OK) {
+    if (can_get(BUS, "UI_status2", "UI_activeTouchPoints", &points_d, false) != ESP_OK) {
         return;
     }
     uint8_t points = (uint8_t)points_d;

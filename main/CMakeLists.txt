@@ -68,7 +68,7 @@ idf_component_register(
 )
 
 # DBC codegen: regenerate the committed dbc_generated.{c,h} from the vendored
-# .dbc + whitelist when a python venv with cantools is available. The generated
+# .dbc when a python venv with cantools is available. The generated
 # files are committed, so a clean (python-less) checkout still builds without
 # this step. OUTPUT paths match the committed paths so an in-tree rebuild simply
 # refreshes them in place.
@@ -82,11 +82,9 @@ if(DBC_PY)
         OUTPUT  "${DBC_GEN_C}" "${DBC_GEN_H}"
         COMMAND "${DBC_PY}" "${DBC_TOOLS_DIR}/gen_dbc.py"
                 --dbc       "${DBC_DIR}/bus_1_tesla_vehicle.dbc"
-                --whitelist "${DBC_DIR}/used_messages.txt"
                 --out-c     "${DBC_GEN_C}"
                 --out-h     "${DBC_GEN_H}"
         DEPENDS "${DBC_DIR}/bus_1_tesla_vehicle.dbc"
-                "${DBC_DIR}/used_messages.txt"
                 "${DBC_TOOLS_DIR}/gen_dbc.py"
         COMMENT "Regenerating DBC tables (dbc_generated.{c,h})"
         VERBATIM

@@ -1,5 +1,4 @@
 #include "mcp251xfd.h"
-#include "dbc/dbc_generated.h"
 #include "can_diag.h"
 #include "esp_log.h"
 #include "esp_timer.h"
@@ -12,7 +11,6 @@
 #include "sdkconfig.h"
 
 #include "mcp251xfd_stream.h"
-#include "can_route.h"
 #include "esp_heap_caps.h"
 // Every SPI transfer on the shared bus is a polling transaction (no per-transfer interrupt and context switch).
 #define spi_xfer_blocking  spi_device_polling_transmit
@@ -111,10 +109,9 @@ typedef struct {
     SemaphoreHandle_t   spi_mutex;
     volatile bool       running;
     esp_timer_handle_t  overflow_timer;
-    // Bulk-lane filters waiting for rx_task (it owns the chip in normal mode): pend_n masked filters, or -1 for
-    // the whole bus.
-    uint32_t            pend_obj[MCPFD_FILTERS], pend_mask[MCPFD_FILTERS];
-    int8_t              pend_n;
+    // Priority-lane ids waiting for rx_task (it owns the chip in normal mode).
+    uint16_t            pend_ids[MCPFD_MAX_FAST_IDS];
+    uint8_t             pend_n;
     volatile bool       flt_dirty;
     portMUX_TYPE        flt_mux;
     // Receive/transmit core (mcp251xfd_stream.c). spi_mutex guards
@@ -342,80 +339,34 @@ static esp_err_t configure_bitrate(mcp251xfd_ctx_t *ctx)
 }
 
 // ---- Hardware acceptance filtering ----
-// Any number of IDs fits into `max` filters: sorted neighbours are merged into one masked filter, always the pair
-// that lets the fewest unwanted IDs through. Extras the masks let in are dropped in software (can_route). Returns
-// the number of filters, or -1 for the whole bus (the app's "Log every frame" entry, 0xFFFF). IDs in skip[] already
-// have a filter of their own. Linear per merge, so ~0.1 ms for 300 IDs.
-#define FLT_MAX_IDS 320
-static int cmp_u16(const void *a, const void *b) { return *(const uint16_t *)a - *(const uint16_t *)b; }
-
-static int fit_filters(const uint16_t *in, int n, const uint16_t *skip, int nskip, int max,
-                       uint32_t *obj, uint32_t *mask)
-{
-    static uint16_t ids[FLT_MAX_IDS], cnt[FLT_MAX_IDS];  // callers run one at a time (BLE task, or start at boot)
-    static uint32_t o[FLT_MAX_IDS], m[FLT_MAX_IDS];
-    int k = 0;
-    if (n > FLT_MAX_IDS) n = FLT_MAX_IDS;
-    memcpy(ids, in, n * sizeof(*ids));
-    qsort(ids, n, sizeof(*ids), cmp_u16);
-    if (n && ids[n - 1] == 0xFFFF) return -1;  // sorted last
-    for (int i = 0; i < n; i++) {
-        bool dup = ids[i] > 0x7FF || (k && o[k - 1] == ids[i]);
-        for (int j = 0; j < nskip && !dup; j++) dup = skip[j] == ids[i];
-        if (dup) continue;
-        o[k] = ids[i]; m[k] = 0x7FF; cnt[k++] = 1;
-    }
-    while (k > max) {
-        int best = 0; uint32_t bm = 0; int bc = 1 << 30;
-        for (int i = 0; i + 1 < k; i++) {
-            uint32_t mm = m[i] & m[i + 1] & ~(o[i] ^ o[i + 1]) & 0x7FF;
-            int c = (1 << (11 - __builtin_popcount(mm))) - cnt[i] - cnt[i + 1];
-            if (c < bc) { bc = c; best = i; bm = mm; }
-        }
-        m[best] = bm; o[best] &= bm; cnt[best] += cnt[best + 1];
-        k--;
-        memmove(&o[best + 1], &o[best + 2], (k - best - 1) * sizeof(*o));
-        memmove(&m[best + 1], &m[best + 2], (k - best - 1) * sizeof(*m));
-        memmove(&cnt[best + 1], &cnt[best + 2], (k - best - 1) * sizeof(*cnt));
-    }
-    memcpy(obj, o, k * sizeof(*o));
-    memcpy(mask, m, k * sizeof(*m));
-    return k;
-}
-
-// The ids this bus must receive besides the fast lane: the chip takes them, and nothing else, until the app asks
-// for the whole bus. Runs in the BLE task (and once before start); rx_task programs the result.
+// The bus is always received in full. `ids` get exact filters into the priority lane, as many as fit. Runs in the
+// caller's task; rx_task programs the result.
 static void iface_set_ids(can_interface_t *self, const uint16_t *ids, int n)
 {
     mcp251xfd_ctx_t *ctx = (mcp251xfd_ctx_t *)self->ctx;
-    static uint32_t obj[MCPFD_FILTERS], mask[MCPFD_FILTERS];
-    uint16_t fast[MCPFD_MAX_FAST_IDS];
-    int nf = (int)can_route_fast_ids(ctx->bus_id, fast, MCPFD_MAX_FAST_IDS);
-    int k = fit_filters(ids, n, fast, nf, MCPFD_FILTERS - nf, obj, mask);
+    int k = 0;
     taskENTER_CRITICAL(&ctx->flt_mux);
-    memcpy(ctx->pend_obj, obj, sizeof(obj));
-    memcpy(ctx->pend_mask, mask, sizeof(mask));
-    ctx->pend_n = (int8_t)k;
+    for (int i = 0; i < n && k < MCPFD_MAX_FAST_IDS; i++) {
+        bool dup = false;
+        for (int j = 0; j < k; j++) dup |= ctx->pend_ids[j] == ids[i];
+        if (!dup) ctx->pend_ids[k++] = ids[i];
+    }
+    ctx->pend_n = (uint8_t)k;
     ctx->flt_dirty = true;
     taskEXIT_CRITICAL(&ctx->flt_mux);
 }
 
-// Fast-lane filters plus the pending bulk-lane set. The caller holds the device lock.
+// The caller holds the device lock.
 static esp_err_t program_filters(mcp251xfd_ctx_t *ctx)
 {
-    uint32_t obj[MCPFD_FILTERS], mask[MCPFD_FILTERS];
-    uint16_t fast[MCPFD_MAX_FAST_IDS];
-    size_t wanted = can_route_fast_ids(ctx->bus_id, fast, MCPFD_MAX_FAST_IDS), used = 0;
+    uint16_t ids[MCPFD_MAX_FAST_IDS];
     taskENTER_CRITICAL(&ctx->flt_mux);
-    memcpy(obj, ctx->pend_obj, sizeof(obj));
-    memcpy(mask, ctx->pend_mask, sizeof(mask));
-    int n = ctx->pend_n;
+    size_t n = ctx->pend_n;
+    memcpy(ids, ctx->pend_ids, n * sizeof(*ids));
     ctx->flt_dirty = false;
     taskEXIT_CRITICAL(&ctx->flt_mux);
-    esp_err_t err = mcpfd_stream_filters_program(&ctx->stream, fast, wanted, obj, mask, n, &used);
-    ESP_LOGI(TAG, "Bus %u: %u fast-lane ids, bulk lanes take %s (%d filters)", (unsigned)ctx->bus_id,
-             (unsigned)used, n < 0 ? "the whole bus" : "the requested ids", n < 0 ? MCPFD_BULK_LANES : n);
-    return err;
+    ESP_LOGI(TAG, "Bus %u: whole bus, %u priority ids", (unsigned)ctx->bus_id, (unsigned)n);
+    return mcpfd_stream_filters_program(&ctx->stream, ids, n);
 }
 
 static esp_err_t configure_fifos(mcp251xfd_ctx_t *ctx)
@@ -525,7 +476,7 @@ static void rx_task(void *arg)
             if (prev && (uint32_t)(t0 - prev) > ctx->busy_gap_max_us) {
                 ctx->busy_gap_max_us = (uint32_t)(t0 - prev);
             }
-            if (ctx->flt_dirty) {   // the app's list changed
+            if (ctx->flt_dirty) {   // the priority ids changed
                 stream_lock(ctx);
                 program_filters(ctx);
                 stream_unlock(ctx);
@@ -765,10 +716,7 @@ static esp_err_t iface_start(can_interface_t *self)
     vTaskDelay(pdMS_TO_TICKS(1));
 
     // Still in configuration mode: replace the self-test's "everything to FIFO 1" filter with the real routing
-    // (firmware-used ids to the fast lane, the rest of dbc/used_messages.txt to the bulk lanes until the app sends
-    // its own list) and empty every RX FIFO.
-    if (ctx->bus_id < DBC_HW_FILTER_BUS_COUNT)
-        iface_set_ids(self, g_dbc_hw_filters[ctx->bus_id].ids, g_dbc_hw_filters[ctx->bus_id].count);
+    // (the priority ids known so far to the fast lane, everything else to the bulk lanes) and empty every RX FIFO.
     stream_lock(ctx);
     esp_err_t ferr = program_filters(ctx);
     if (ferr == ESP_OK) ferr = mcpfd_stream_reset_rx(&ctx->stream);

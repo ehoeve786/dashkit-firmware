@@ -8,7 +8,7 @@
 // Initialize the CAN manager (creates the shared frame queue)
 esp_err_t can_manager_init(void);
 
-// Re-fits every bus's hardware filters to the firmware's IDs plus the app's current filter.
+// Gives every bus's priority lane to the messages the firmware reads plus the app's current filter.
 void can_manager_apply_filters(void);
 
 // Current thinning of whole-bus frames: at most one frame per id in this many ms (0 = none). See bulk_due().

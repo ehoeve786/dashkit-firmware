@@ -1,18 +1,22 @@
 #!/usr/bin/env python3
-"""Generate main/can/dbc/dbc_generated.{c,h} from a Tesla DBC + a whitelist.
+"""Generate main/can/dbc/dbc_generated.{c,h} from a Tesla DBC.
 
 cantools is used as a PARSER ONLY. Its own `generate_c_source` emits per-message
 structs and float encode/decode, which is the opposite of the string/handle table
 API the firmware engine wants (and it can't do Tesla checksum/counter), so we
 hand-roll the emitter here.
 
-Only messages listed in dbc/used_messages.txt (plus ALL of their signals) are
-emitted, to keep flash usage bounded.
+Every message in the DBC is emitted with all of its signals, so firmware code
+can read or send any of them by name with no list to maintain. Messages are
+sorted by id (the RX path finds a frame's message by binary search) and
+g_dbc_by_name indexes them by name.
 
-Layout assumptions (asserted, fail loud on violation):
+Layout assumptions:
   * Every emitted signal is little-endian (Intel). For little-endian, cantools'
-    `signal.start` IS the LSB DBC start bit, so we emit it verbatim. A big-endian
-    signal would need different handling and indicates a bad include -> error.
+    `signal.start` IS the LSB DBC start bit, so we emit it verbatim. Messages
+    with a big-endian signal are left out (the engine cannot decode them), as
+    are extended-id and longer-than-8-byte messages (the value cache and the
+    drivers' priority filters hold classic standard frames).
   * Checksum signal (strict): name == <Msg>Checksum, 8 bits, little-endian.
     *CRC/*Crc and the 1-bit ESP_a* checks are intentionally NOT matched.
   * Counter signal: name == <Msg>Counter (any width; DI_*Counter is 3-bit).
@@ -27,40 +31,6 @@ try:
 except ImportError:
     sys.stderr.write("error: cantools not installed (pip install -r requirements.txt)\n")
     sys.exit(1)
-
-
-def load_manifest(path):
-    """Parse the annotated message manifest.
-
-    Each non-comment line is:  NAME  BUS  ROLE
-      BUS  in {0, 1}
-      ROLE in {decode, filter}
-    Returns a list of dicts {name, bus, role} in file order.
-    """
-    entries = []
-    with open(path) as f:
-        for lineno, raw in enumerate(f, 1):
-            line = raw.split("#", 1)[0].strip()
-            if not line:
-                continue
-            parts = line.split()
-            if len(parts) != 3:
-                sys.stderr.write(
-                    "error: %s:%d: expected 'NAME BUS ROLE', got %r\n"
-                    % (path, lineno, line))
-                sys.exit(1)
-            name, bus_s, role = parts
-            if bus_s not in ("0", "1"):
-                sys.stderr.write("error: %s:%d: bus must be 0 or 1, got %r\n"
-                                 % (path, lineno, bus_s))
-                sys.exit(1)
-            if role not in ("decode", "filter"):
-                sys.stderr.write(
-                    "error: %s:%d: role must be 'decode' or 'filter', got %r\n"
-                    % (path, lineno, role))
-                sys.exit(1)
-            entries.append({"name": name, "bus": int(bus_s), "role": role})
-    return entries
 
 
 def signal_byte_order(sig):
@@ -83,41 +53,20 @@ def c_float(x):
     return repr(float(x))
 
 
-def generate(dbc_path, manifest_path, out_c, out_h):
+def generate(dbc_path, out_c, out_h):
     # strict=False: the full Tesla DBC has a few self-inconsistent messages
-    # (e.g. UTC_unixTime) unrelated to our whitelist; don't let them block load.
+    # (e.g. UTC_unixTime); don't let them block the load.
     db = cantools.database.load_file(dbc_path, strict=False)
-    by_name = {m.name: m for m in db.messages}
 
-    manifest = load_manifest(manifest_path)
-    for e in manifest:
-        if e["name"] not in by_name:
-            sys.stderr.write("error: message '%s' not in %s\n"
-                             % (e["name"], dbc_path))
-            sys.exit(1)
+    def usable(m):
+        return (not m.is_extended_frame and m.length <= 8
+                and all(signal_byte_order(sig) == "little_endian" for sig in m.signals))
 
-    # Only `decode` entries get full signal/message tables (flash cost). Track
-    # the annotated bus per decode message so default_bus is data-driven.
-    decode_entries = [e for e in manifest if e["role"] == "decode"]
-    messages = [by_name[e["name"]] for e in decode_entries]
-    bus_of = {e["name"]: e["bus"] for e in decode_entries}
-
-    # Per-bus id lists: every manifest entry (decode + filter), grouped by its
-    # bus, de-duplicated, in file order. The MCP251xFD driver receives these
-    # until the app sends its own list (fitted into the controller's filters).
-    NUM_BUSES = 2
-    hw_filter_ids = [[] for _ in range(NUM_BUSES)]
-    for e in manifest:
-        sid = by_name[e["name"]].frame_id & 0x7FF
-        lst = hw_filter_ids[e["bus"]]
-        if sid not in lst:
-            lst.append(sid)
-    # Decoded messages get exact fast-lane filters: 28 per bus (MCPFD_MAX_FAST_IDS).
-    for b in range(NUM_BUSES):
-        n = sum(1 for e in decode_entries if e["bus"] == b)
-        if n > 28:
-            sys.stderr.write("error: bus %d has %d decoded messages (max 28)\n" % (b, n))
-            sys.exit(1)
+    messages = sorted((m for m in db.messages if usable(m)), key=lambda m: m.frame_id)
+    skipped = sorted(m.name for m in db.messages if not usable(m))
+    if skipped:
+        sys.stderr.write("gen_dbc: left out (big-endian, extended or > 8 bytes): %s\n"
+                         % ", ".join(skipped))
 
     # First pass: flatten signals (sorted by start bit) and assign global indices.
     flat_signals = []          # list of (msg, sig)
@@ -134,15 +83,6 @@ def generate(dbc_path, manifest_path, out_c, out_h):
         checksum_algo = "DBC_CKSUM_NONE"
 
         for sig in sigs:
-            bo = signal_byte_order(sig)
-            if bo != "little_endian":
-                sys.stderr.write(
-                    "error: signal %s.%s is big-endian (byte_order=%s); the "
-                    "engine only supports little-endian. Remove the message "
-                    "from the whitelist or extend the engine.\n"
-                    % (msg.name, sig.name, bo))
-                sys.exit(1)
-
             gidx = len(flat_signals)
             sig_index[(msg.name, sig.name)] = gidx
             flat_signals.append((msg, sig))
@@ -192,7 +132,7 @@ def generate(dbc_path, manifest_path, out_c, out_h):
     # --- Emit header ---
     h = []
     h.append("// AUTO-GENERATED by tools/gen_dbc.py -- DO NOT EDIT.")
-    h.append("// source: %s + dbc/used_messages.txt" % os.path.basename(dbc_path))
+    h.append("// source: %s" % os.path.basename(dbc_path))
     h.append("// Committed so a clean (Python-less) checkout still builds.")
     h.append("#pragma once")
     h.append("")
@@ -218,7 +158,6 @@ def generate(dbc_path, manifest_path, out_c, out_h):
     h.append("    const char *name;")
     h.append("    uint32_t id;")
     h.append("    uint8_t  dlc;")
-    h.append("    uint8_t  default_bus;")
     h.append("    uint16_t sig_first;   // index of first signal in g_dbc_signals")
     h.append("    uint16_t sig_count;")
     h.append("    uint8_t  checksum_algo;")
@@ -232,16 +171,9 @@ def generate(dbc_path, manifest_path, out_c, out_h):
     h.append("extern const dbc_message_t g_dbc_messages[DBC_MESSAGE_COUNT];")
     h.append("extern const dbc_signal_t  g_dbc_signals[DBC_SIGNAL_COUNT];")
     h.append("")
-    h.append("// Per-bus hardware RX acceptance-filter ID lists (11-bit standard")
-    h.append("// IDs). Index g_dbc_hw_filters[] by physical bus id (0=chassis,")
-    h.append("// 1=vehicle); program one exact-match MCP251xFD filter per id.")
-    h.append("typedef struct {")
-    h.append("    const uint16_t *ids;")
-    h.append("    uint8_t         count;")
-    h.append("} dbc_hw_filter_set_t;")
-    h.append("")
-    h.append("#define DBC_HW_FILTER_BUS_COUNT %d" % NUM_BUSES)
-    h.append("extern const dbc_hw_filter_set_t g_dbc_hw_filters[DBC_HW_FILTER_BUS_COUNT];")
+    h.append("// g_dbc_messages is sorted by id; g_dbc_by_name lists its indices in name")
+    h.append("// (strcmp) order.")
+    h.append("extern const uint16_t g_dbc_by_name[DBC_MESSAGE_COUNT];")
     h.append("")
 
     # --- Emit source ---
@@ -266,24 +198,17 @@ def generate(dbc_path, manifest_path, out_c, out_h):
     c.append("const dbc_message_t g_dbc_messages[DBC_MESSAGE_COUNT] = {")
     for m in msg_meta:
         msg = m["msg"]
-        bus = bus_of[msg.name]  # data-driven from the manifest annotation
-        c.append('    { "%s", 0x%03X, %d, %d, %d, %d, %s, %d, %d },' % (
-            msg.name, msg.frame_id, msg.length, bus,
+        c.append('    { "%s", 0x%03X, %d, %d, %d, %s, %d, %d },' % (
+            msg.name, msg.frame_id, msg.length,
             m["sig_first"], m["sig_count"],
             m["checksum_algo"], m["checksum_sig"], m["counter_sig"]))
     c.append("};")
     c.append("")
 
-    # Per-bus HW acceptance-filter ID arrays + the index table.
-    for b, lst in enumerate(hw_filter_ids):
-        if lst:
-            c.append("static const uint16_t hw_filter_bus%d_ids[] = {" % b)
-            c.append("    " + ", ".join("0x%03X" % i for i in lst) + ",")
-            c.append("};")
-    c.append("const dbc_hw_filter_set_t g_dbc_hw_filters[DBC_HW_FILTER_BUS_COUNT] = {")
-    for b, lst in enumerate(hw_filter_ids):
-        arr = ("hw_filter_bus%d_ids" % b) if lst else "0"
-        c.append("    { %s, %d }," % (arr, len(lst)))
+    by_name = sorted(range(len(messages)), key=lambda i: messages[i].name.encode())
+    c.append("const uint16_t g_dbc_by_name[DBC_MESSAGE_COUNT] = {")
+    for i in range(0, len(by_name), 16):
+        c.append("    " + ", ".join("%d" % v for v in by_name[i:i + 16]) + ",")
     c.append("};")
     c.append("")
 
@@ -300,11 +225,10 @@ def generate(dbc_path, manifest_path, out_c, out_h):
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--dbc", required=True)
-    ap.add_argument("--whitelist", required=True)
     ap.add_argument("--out-c", required=True)
     ap.add_argument("--out-h", required=True)
     args = ap.parse_args()
-    generate(args.dbc, args.whitelist, args.out_c, args.out_h)
+    generate(args.dbc, args.out_c, args.out_h)
 
 
 if __name__ == "__main__":

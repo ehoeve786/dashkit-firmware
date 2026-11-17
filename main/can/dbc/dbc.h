@@ -5,13 +5,16 @@
 // (dbc_generated.{c,h}, produced from dbc/bus_1_tesla_vehicle.dbc). This
 // replaces the hand-rolled per-feature pack()/checksum()/hardcoded-id code.
 //
-// All whitelisted signals are little-endian (Intel); see tools/gen_dbc.py.
+// Every message in the DBC is available, on either bus, with nothing to
+// register: the CAN controllers receive both buses in full. All generated
+// signals are little-endian (Intel); see tools/gen_dbc.py.
 
 #include "can_interface.h"
 #include "dbc_generated.h"
 #include "esp_err.h"
 
 #include <stdbool.h>
+#include <stddef.h>
 #include <stdint.h>
 
 #ifdef __cplusplus
@@ -22,13 +25,16 @@ extern "C" {
 typedef int16_t dbc_msg_t;  // index into g_dbc_messages, or DBC_MSG_INVALID
 typedef int16_t dbc_sig_t;  // index into g_dbc_signals, or DBC_SIG_INVALID
 
+#define DBC_BUSES        2   // 0 = chassis, 1 = vehicle
+
 #define DBC_MSG_INVALID  ((dbc_msg_t)-1)
 #define DBC_SIG_INVALID  ((dbc_sig_t)-1)
 
 // Reset rolling counters. Call once at boot before any can_send.
 void dbc_init(void);
 
-// Resolve a message / signal name to a handle (linear scan of the small tables).
+// Resolve a message / signal name to a handle (binary search over the messages,
+// then a scan of that message's signals).
 dbc_msg_t dbc_msg(const char *name);
 dbc_sig_t dbc_sig(dbc_msg_t msg, const char *name);
 
@@ -54,14 +60,14 @@ int64_t dbc_phys_to_raw(dbc_sig_t sig, double phys);
 // `double` carries both: raw integers are exact up to 2^53.
 
 // Read a signal from the DBC value cache (the latest frame seen for the
-// message). Mux-aware (returns ESP_ERR_INVALID_STATE if the live frame carries a
+// message on `bus`). Mux-aware (returns ESP_ERR_INVALID_STATE if the live frame carries a
 // different mux). ESP_ERR_NOT_FOUND if no frame for the message has arrived yet.
 esp_err_t can_get(uint8_t bus, const char *msg, const char *sig, double *out, bool scaling);
 
-// True if a frame for the message arrived within the last max_age_ms. The cache
-// never expires on its own, so checks that gate actions on the car's current
-// state (gear, speed) must not trust a value the bus stopped refreshing.
-bool can_msg_fresh(const char *msg, uint32_t max_age_ms);
+// True if a frame for the message arrived on `bus` within the last max_age_ms.
+// The cache never expires on its own, so checks that gate actions on the car's
+// current state (gear, speed) must not trust a value the bus stopped refreshing.
+bool can_msg_fresh(uint8_t bus, const char *msg, uint32_t max_age_ms);
 
 // One-shot send: zeroed frame, pack one signal (auto-writing its mux selector),
 // auto counter + checksum, transmit on `bus`. Names resolved internally.
@@ -75,9 +81,17 @@ esp_err_t can_send_live(uint8_t bus, const char *msg, const char *sig, double va
 // Feed a received frame into the DBC value cache. Called by the CAN RX path for
 // every frame; frames whose id matches a generated message are kept as the
 // latest value (the basis for can_get / can_send_live / can_frame_live). Frames
-// with no DBC definition are ignored. No registration needed — like opendbc's
+// with no DBC definition are ignored (returns false). No registration needed — like opendbc's
 // CANParser keeping `vl` for every message in the loaded DBC.
-void dbc_observe_frame(const can_tagged_frame_t *f);
+bool dbc_observe_frame(const can_tagged_frame_t *f);
+
+// The standard ids of the messages firmware code has read so far on `bus`
+// (can_get, can_msg_fresh, can_frame_live, can_send_live, counter seeding), at
+// most `max`; returns the count. The CAN driver gives these its priority lane,
+// so the rest of the bus can never crowd them out. dbc_used_changed() is true
+// once after the set grows.
+size_t dbc_used_ids(uint8_t bus, uint16_t *out, size_t max);
+bool   dbc_used_changed(void);
 
 // Seed a message's rolling counter from the live bus frame so the next send
 // continues the car's sequence: counter is set to the last value seen, and the

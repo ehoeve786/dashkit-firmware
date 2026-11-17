@@ -71,21 +71,53 @@ int main(void)
 {
     dbc_init();
 
-    // The manifest holds only what the firmware decodes: app-only messages such as ambient lighting (0x679)
-    // reach BLE because the app lists them, and decoded messages fit the fast lane (28 per bus).
+    // Every little-endian message in the DBC is generated, sorted by id, and found by name.
     {
-        for (unsigned bus = 0; bus < DBC_HW_FILTER_BUS_COUNT; bus++) {
-            unsigned matches = 0;
-            const dbc_hw_filter_set_t *fs = &g_dbc_hw_filters[bus];
-            for (unsigned i = 0; i < fs->count; i++) {
-                if (fs->ids[i] == 0x679) matches++;
-            }
-            CHECK(matches == 0 && fs->count <= 28,
-                  "ambient RX filter bus %u: %u matches, %u slots",
-                  bus, matches, fs->count);
+        int sorted = 1, found = 1;
+        for (int i = 0; i < DBC_MESSAGE_COUNT; i++) {
+            if (i && g_dbc_messages[i - 1].id >= g_dbc_messages[i].id) sorted = 0;
+            if (i && strcmp(g_dbc_messages[g_dbc_by_name[i - 1]].name, g_dbc_messages[g_dbc_by_name[i]].name) >= 0) sorted = 0;
+            if (dbc_msg(g_dbc_messages[i].name) != i) found = 0;
+            if (g_dbc_messages[i].id > 0x7FF || g_dbc_messages[i].dlc > 8) sorted = 0;
         }
-        CHECK(dbc_msg("UI_ambientLightingCtrls") == DBC_MSG_INVALID,
-              "ambient candidate remains filter-only");
+        CHECK(DBC_MESSAGE_COUNT > 300 && sorted && found, "%d messages, sorted=%d, found by name=%d",
+              DBC_MESSAGE_COUNT, sorted, found);
+        CHECK(dbc_msg("UI_ambientLightingCtrls") != DBC_MSG_INVALID, "a message no firmware code uses is there");
+        CHECK(dbc_msg("") == DBC_MSG_INVALID && dbc_msg("ZZZ") == DBC_MSG_INVALID && dbc_msg("AAA") == DBC_MSG_INVALID,
+              "unknown names are not found");
+    }
+
+    // The cache is per bus, and reading a message marks it used on that bus (the driver's priority lane).
+    {
+        uint16_t ids[8];
+        uint8_t d[8] = {0}; d[0] = 0xF0;
+        double v = -1;
+        CHECK(dbc_used_ids(0, ids, 8) == 0 && dbc_used_ids(1, ids, 8) == 0 && !dbc_used_changed(),
+              "nothing is used before the first read");
+        set_live(0x3E9, 8, d);   // DAS_bodyControls, on bus 1
+        CHECK(can_get(0, "DAS_bodyControls", "DAS_wiperSpeed", &v, false) == ESP_ERR_NOT_FOUND,
+              "a frame seen on bus 1 is not there on bus 0");
+        CHECK(can_get(1, "DAS_bodyControls", "DAS_wiperSpeed", &v, false) == ESP_OK && v == 15,
+              "and is on bus 1 -> %d (want 15)", (int)v);
+        CHECK(can_get(2, "DAS_bodyControls", "DAS_wiperSpeed", &v, false) == ESP_ERR_NOT_FOUND,
+              "unknown bus is not found");
+        CHECK(dbc_used_ids(0, ids, 8) == 1 && ids[0] == 0x3E9 && dbc_used_ids(1, ids, 8) == 1 && ids[0] == 0x3E9
+              && dbc_used_ids(1, ids, 0) == 0, "both reads are marked used");
+        CHECK(dbc_used_changed() && !dbc_used_changed(), "the change is reported once");
+        can_get(1, "DAS_bodyControls", "DAS_wiperSpeed", &v, false);
+        CHECK(!dbc_used_changed(), "a repeated read is no change");
+
+        can_tagged_frame_t f;
+        memset(&f, 0, sizeof(f));
+        f.bus_id = 1; f.frame.id = 0x3E9; f.frame.dlc = 8; f.frame.extended = true;
+        CHECK(!dbc_observe_frame(&f), "an extended frame is not a DBC message");
+        f.frame.extended = false; f.frame.id = 0x7FE;
+        CHECK(!dbc_observe_frame(&f), "an id outside the DBC is ignored");
+        f.frame.id = 0x3E9; f.bus_id = 2;
+        CHECK(!dbc_observe_frame(&f), "an unknown bus is ignored");
+        can_frame_t live;
+        CHECK(can_frame_live(1, "DAS_bodyControls", &live) == ESP_OK && live.id == 0x3E9 && live.dlc == 8
+              && live.data[0] == 0xF0 && !live.extended, "the cached frame comes back whole");
     }
 
     // 1. Charge port open = bit0 of byte0 on a zeroed UI_chargeRequest.
@@ -198,11 +230,12 @@ int main(void)
         g_fake_time_us = 10 * 1000 * 1000;
         set_live(0x249, 3, d);
         g_fake_time_us += 400 * 1000;
-        CHECK(can_msg_fresh("SCCM_leftStalk", 500), "400 ms old frame should be fresh");
+        CHECK(can_msg_fresh(1, "SCCM_leftStalk", 500), "400 ms old frame should be fresh");
+        CHECK(!can_msg_fresh(0, "SCCM_leftStalk", 500), "but not on the bus it did not arrive on");
         g_fake_time_us += 200 * 1000;
-        CHECK(!can_msg_fresh("SCCM_leftStalk", 500), "600 ms old frame should be stale");
-        CHECK(!can_msg_fresh("EPBR_internalStatus", 500), "never-seen message should not be fresh");
-        CHECK(!can_msg_fresh("NoSuchMessage", 500), "unknown message should not be fresh");
+        CHECK(!can_msg_fresh(1, "SCCM_leftStalk", 500), "600 ms old frame should be stale");
+        CHECK(!can_msg_fresh(1, "EPBR_internalStatus", 500), "never-seen message should not be fresh");
+        CHECK(!can_msg_fresh(1, "NoSuchMessage", 500), "unknown message should not be fresh");
     }
 
     printf("\n%s\n", g_fail ? "TESTS FAILED" : "ALL TESTS PASSED");

@@ -74,9 +74,8 @@ static bool enqueue(const can_tagged_frame_t *frame, uint8_t route)
     return true;
 }
 
-// The driver delivers more than was asked for (masked filters, or the whole bus), so the software route decides
-// per frame (one bit lookup each) whether the firmware uses it and whether the app gets it. Anything else is
-// dropped here, before any work.
+// The drivers deliver both buses in full. Every frame goes to the DBC value cache and the automations; the
+// software route decides per frame (one bit lookup) whether the app gets it too.
 #define ROUTE_REPORT_US  (5 * 1000 * 1000)
 static volatile uint32_t s_seen, s_core, s_forwarded, s_queue_full;
 static uint32_t          s_rep_seen, s_rep_core, s_rep_forwarded, s_rep_queue_full;
@@ -86,12 +85,13 @@ static void route_report_cb(void *arg)
     (void)arg;
     uint32_t seen = s_seen, core = s_core, fwd = s_forwarded, full = s_queue_full;
     uint32_t secs = ROUTE_REPORT_US / 1000000;
-    ESP_LOGI(TAG, "route: %lu fps on the buses, %lu fps used by firmware, %lu fps to the app, "
+    ESP_LOGI(TAG, "route: %lu fps on the buses, %lu fps in the DBC, %lu fps to the app, "
                   "queue-full drops %lu (+%lu)",
              (unsigned long)((seen - s_rep_seen) / secs),
              (unsigned long)((core - s_rep_core) / secs),
              (unsigned long)((fwd - s_rep_forwarded) / secs),
              (unsigned long)full, (unsigned long)(full - s_rep_queue_full));
+    if (dbc_used_changed()) can_manager_apply_filters();  // firmware code read a message for the first time
     uint8_t d[8];
     can_diag_pack4(d, (seen - s_rep_seen) / secs, (core - s_rep_core) / secs,
                    (fwd - s_rep_forwarded) / secs, full);
@@ -105,17 +105,11 @@ static void on_frame_received(const can_tagged_frame_t *frame, void *user_ctx)
     (void)user_ctx;
     if (!s_rx_queue) return;
     s_seen++;
+    s_core += dbc_observe_frame(frame);
+    automation_manager_on_frame(frame);
+    vehicle_control_on_frame(frame);
     uint8_t route = can_route_classify(frame->bus_id, frame->frame.id, frame->frame.extended);
     if (!route) return;
-    if (route & CAN_ROUTE_CORE) {
-        // Same order and same frame set as the default build, where the
-        // hardware filters only pass manifest ids.
-        s_core++;
-        dbc_observe_frame(frame);
-        automation_manager_on_frame(frame);
-        vehicle_control_on_frame(frame);
-    }
-    if (!(route & CAN_ROUTE_FORWARD)) return;
 
     // Drop frame if queue is full rather than blocking the driver
     if (enqueue(frame, route)) {
@@ -219,21 +213,17 @@ esp_err_t can_manager_inject(const can_tagged_frame_t *frame)
     return enqueue(frame, route) ? ESP_OK : ESP_ERR_NO_MEM;
 }
 
-// Each bus receives the firmware's own IDs + the ones the app asked for (no 32-ID limit: the driver merges them
-// into masks), or all of it once the app asks for the whole bus. Called from the BLE task whenever the app's
-// filter changes.
+// Each bus is received in full; these ids get the driver's priority lane, which the rest of the bus cannot crowd
+// out: first the messages firmware code reads, then the ids the app asked for, as far as the lane's filters go.
+// Called from the BLE task when the app's list changes and from the report timer when the firmware's set grows.
 void can_manager_apply_filters(void)
 {
-    static uint16_t ids[320];
     s_bulk_gap_ms = 0;  // a new subscription starts unthinned; the gap only decays while bulk frames flow
     for (int i = 0; i < s_iface_count; i++) {
         can_interface_t *f = s_interfaces[i];
         if (!f->set_ids) continue;
-        size_t n = 0;
-        if (f->bus_id < DBC_HW_FILTER_BUS_COUNT) {
-            const dbc_hw_filter_set_t *fs = &g_dbc_hw_filters[f->bus_id];
-            for (; n < fs->count && n < 64; n++) ids[n] = fs->ids[n];
-        }
+        uint16_t ids[64];   // more than the lane holds: the driver skips duplicates and stops when it is full
+        size_t n = dbc_used_ids(f->bus_id, ids, sizeof(ids) / sizeof(*ids) / 2);
         n += can_filter_ids(f->bus_id, ids + n, sizeof(ids) / sizeof(*ids) - n);
         f->set_ids(f, ids, n);
     }

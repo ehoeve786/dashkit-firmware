@@ -10,7 +10,6 @@
 #include "mcp251xfd_stream.h"
 #include "can_route.h"
 #include "can_diag.h"
-#include "dbc_generated.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -291,9 +290,7 @@ static void rig_init(rig_t *r)
     r->hooks = (mcpfd_hooks_t){ rig_lock, rig_unlock, rig_deliver, r };
     mcpfd_stream_init(&r->s);
     CHECK(mcpfd_stream_config_fifos(&r->s) == ESP_OK);
-    size_t used = 0;
-    CHECK(mcpfd_stream_filters_program(&r->s, kFast, NFAST, NULL, NULL, -1, &used) == ESP_OK);
-    CHECK(used == NFAST);
+    CHECK(mcpfd_stream_filters_program(&r->s, kFast, NFAST) == ESP_OK);
     CHECK(mcpfd_stream_reset_rx(&r->s) == ESP_OK);
 }
 
@@ -397,49 +394,24 @@ static void fast_ids_beyond_the_filter_budget_stay_on_bulk(void)
     uint16_t ids[40];
     for (int i = 0; i < 40; i++) ids[i] = (uint16_t)(0x100 + i);
     ids[5] = ids[4];                                          // a duplicate uses no filter
-    size_t used = 0;
-    CHECK(mcpfd_stream_filters_program(&r.s, ids, 40, NULL, NULL, -1, &used) == ESP_OK);
-    CHECK(used == MCPFD_MAX_FAST_IDS);
+    CHECK(mcpfd_stream_filters_program(&r.s, ids, 40) == ESP_OK);
     CHECK(rig_inject(&r, 0x100) == MCPFD_FIFO_FAST);
+    CHECK(rig_inject(&r, 0x100 + MCPFD_MAX_FAST_IDS) == MCPFD_FIFO_FAST);          // the 28th distinct id
+    CHECK(rig_inject(&r, 0x100 + MCPFD_MAX_FAST_IDS + 1) == MCPFD_FIFO_BULK0 + ((0x100 + MCPFD_MAX_FAST_IDS + 1) & 3));
     CHECK(rig_inject(&r, 0x100 + 39) == MCPFD_FIFO_BULK0 + ((0x100 + 39) & 3));   // still received
     rig_drain(&r);
     rig_check_all_delivered(&r);
 }
 
-static void fitted_filters_receive_only_what_was_asked_for(void)
+static void no_priority_ids_still_receives_the_whole_bus(void)
 {
     static rig_t r;
     rig_init(&r);
-    // 0x200 exact, 0x310..0x313 through one masked filter, 0x7F0 exact.
-    const uint32_t obj[] = { 0x200, 0x310, 0x7F0 }, mask[] = { 0x7FF, 0x7FC, 0x7FF };
-    size_t used = 0;
-    CHECK(mcpfd_stream_filters_program(&r.s, kFast, NFAST, obj, mask, 3, &used) == ESP_OK);
-    CHECK(used == NFAST);
-    CHECK(rig_inject(&r, kFast[0]) == MCPFD_FIFO_FAST);
-    CHECK(rig_inject(&r, 0x200) == MCPFD_FIFO_BULK0);
-    CHECK(rig_inject(&r, 0x312) == MCPFD_FIFO_BULK0 + 1);
-    CHECK(rig_inject(&r, 0x7F0) == MCPFD_FIFO_BULK0 + 2);
-    CHECK(rig_inject(&r, 0x201) == 0);                        // not asked for: never leaves the bus
-    CHECK(rig_inject(&r, 0x314) == 0);
-    rig_drain(&r);
-    rig_check_all_delivered(&r);
-    CHECK(r.delivered == 4);
-
-    // No ids at all: the fast lane only.
-    CHECK(mcpfd_stream_filters_program(&r.s, kFast, NFAST, obj, mask, 0, NULL) == ESP_OK);
-    CHECK(rig_inject(&r, 0x200) == 0);
-    CHECK(rig_inject(&r, kFast[1]) == MCPFD_FIFO_FAST);
-
-    // More filters than are left behind the fast lane: the whole bus rather than a lost id.
-    static uint32_t many[MCPFD_FILTERS], ones[MCPFD_FILTERS];
-    for (int i = 0; i < MCPFD_FILTERS; i++) { many[i] = 0x400u + (uint32_t)i; ones[i] = 0x7FF; }
-    CHECK(mcpfd_stream_filters_program(&r.s, kFast, NFAST, many, ones, MCPFD_FILTERS - (int)NFAST + 1, NULL) == ESP_OK);
-    CHECK(rig_inject(&r, 0x201) == MCPFD_FIFO_BULK0 + 1);
-    // Exactly as many as are left: fitted again.
-    CHECK(mcpfd_stream_filters_program(&r.s, kFast, NFAST, many, ones, MCPFD_FILTERS - (int)NFAST, NULL) == ESP_OK);
-    CHECK(rig_inject(&r, 0x201) == 0);
-    CHECK(rig_inject(&r, 0x400 + MCPFD_FILTERS - (int)NFAST - 1) > 0);
-    rig_drain(&r);
+    CHECK(mcpfd_stream_filters_program(&r.s, NULL, 0) == ESP_OK);
+    for (uint32_t id = 0; id < 2048; id += 97) {
+        CHECK(rig_inject(&r, id) == MCPFD_FIFO_BULK0 + (int)(id & 3));
+        rig_drain(&r);
+    }
     rig_check_all_delivered(&r);
 }
 
@@ -655,91 +627,54 @@ static void idle_step_is_one_transfer(void)
 }
 
 // ---------------------------------------------------------------------------
-// Software routing tests (against the real generated manifest tables)
+// Software routing tests
 // ---------------------------------------------------------------------------
-static bool in_manifest(int bus, uint32_t id)
-{
-    for (int i = 0; i < g_dbc_hw_filters[bus].count; i++)
-        if (g_dbc_hw_filters[bus].ids[i] == id) return true;
-    return false;
-}
-
-static void route_default_is_the_manifest(void)
+static void route_forwards_nothing_without_a_list(void)
 {
     can_route_init();
-    for (int bus = 0; bus < CAN_ROUTE_BUSES; bus++) {
-        for (uint32_t id = 0; id < 2048; id++) {
-            uint8_t want = in_manifest(bus, id) ? (CAN_ROUTE_CORE | CAN_ROUTE_FORWARD) : 0;
-            CHECK(can_route_classify((uint8_t)bus, id, false) == want);
-        }
-    }
-    // Not a standard frame on a known bus: never routed by default.
-    CHECK(can_route_classify(1, g_dbc_hw_filters[1].ids[0], true) == 0);
-    CHECK(can_route_classify(2, g_dbc_hw_filters[1].ids[0], false) == 0);
+    for (int bus = 0; bus < CAN_ROUTE_BUSES; bus++)
+        for (uint32_t id = 0; id < 2048; id++) CHECK(can_route_classify((uint8_t)bus, id, false) == 0);
     CHECK(can_route_classify(0, 0x12345, true) == 0);
 }
 
 static void route_app_list_is_a_subscription(void)
 {
     can_route_init();
-    uint32_t core_id = g_dbc_hw_filters[1].ids[0];
-    uint32_t other = 0x7E0;                       // not in the manifest
-    CHECK(!in_manifest(1, other) && !in_manifest(0, other));
-
     can_route_forward_begin();
-    can_route_forward_add(1, other);
+    can_route_forward_add(1, 0x7E0);
     can_route_forward_add(0, 0x129);
     can_route_forward_add(7, 0x129);              // unknown bus: ignored
     can_route_forward_add(1, 0x12345678);         // extended id: ignored without the wildcard
-    can_route_forward_commit(4);
+    can_route_forward_commit();
 
-    CHECK(can_route_classify(1, other, false) == CAN_ROUTE_FORWARD);      // beyond the manifest
-    CHECK(can_route_classify(0, other, false) == 0);                      // per bus
-    CHECK(can_route_classify(0, 0x129, false) & CAN_ROUTE_FORWARD);
-    // A manifest id the app did not list still feeds the firmware, not the app.
-    CHECK(can_route_classify(1, core_id, false) == CAN_ROUTE_CORE);
+    CHECK(can_route_classify(1, 0x7E0, false) == CAN_ROUTE_FORWARD);
+    CHECK(can_route_classify(0, 0x7E0, false) == 0);                      // per bus
+    CHECK(can_route_classify(0, 0x129, false) == CAN_ROUTE_FORWARD);
+    CHECK(can_route_classify(1, 0x129, false) == 0);                      // not listed: stays in the firmware
+    CHECK(can_route_classify(1, 0x7E0, true) == 0);                       // an extended frame is not that id
     CHECK(can_route_classify(1, 0x12345678, true) == 0);
+    CHECK(can_route_classify(2, 0x129, false) == 0);
 
     // Wildcard: the whole bus, extended frames included.
     can_route_forward_begin();
     can_route_forward_add(1, CAN_ROUTE_ADDR_ALL);
-    can_route_forward_commit(1);
+    can_route_forward_commit();
     // Matched only by the wildcard: forwarded in the bulk queue.
-    CHECK(can_route_classify(1, other, false) == (CAN_ROUTE_FORWARD | CAN_ROUTE_BULK));
-    CHECK(can_route_classify(1, core_id, false) == (CAN_ROUTE_CORE | CAN_ROUTE_FORWARD | CAN_ROUTE_BULK));
+    CHECK(can_route_classify(1, 0x7E0, false) == (CAN_ROUTE_FORWARD | CAN_ROUTE_BULK));
     CHECK(can_route_classify(1, 0x12345678, true) == (CAN_ROUTE_FORWARD | CAN_ROUTE_BULK));
-    CHECK(can_route_classify(0, other, false) == 0);
+    CHECK(can_route_classify(0, 0x7E0, false) == 0);
     // Listed by id as well as by the wildcard: not bulk.
     can_route_forward_begin();
     can_route_forward_add(1, CAN_ROUTE_ADDR_ALL);
-    can_route_forward_add(1, other);
-    can_route_forward_commit(2);
-    CHECK(can_route_classify(1, other, false) == CAN_ROUTE_FORWARD);
-    CHECK(can_route_classify(1, core_id, false) == (CAN_ROUTE_CORE | CAN_ROUTE_FORWARD | CAN_ROUTE_BULK));
+    can_route_forward_add(1, 0x7E0);
+    can_route_forward_commit();
+    CHECK(can_route_classify(1, 0x7E0, false) == CAN_ROUTE_FORWARD);
+    CHECK(can_route_classify(1, 0x129, false) == (CAN_ROUTE_FORWARD | CAN_ROUTE_BULK));
 
-    // Clearing the list (the app disconnected) restores the default.
+    // Clearing the list (the app disconnected): nothing is forwarded.
     can_route_forward_begin();
-    can_route_forward_commit(0);
-    CHECK(can_route_classify(1, other, false) == 0);
-    CHECK(can_route_classify(1, core_id, false) == (CAN_ROUTE_CORE | CAN_ROUTE_FORWARD));
-}
-
-static void route_fast_ids_fit_the_filter_budget(void)
-{
-    for (int bus = 0; bus < CAN_ROUTE_BUSES; bus++) {
-        uint16_t ids[64];
-        size_t n = can_route_fast_ids((uint8_t)bus, ids, 64);
-        // Every message the firmware decodes or injects gets a fast-lane filter.
-        CHECK(n > 0 && n <= MCPFD_MAX_FAST_IDS);
-        size_t want = 0;
-        for (int i = 0; i < DBC_MESSAGE_COUNT; i++) want += g_dbc_messages[i].default_bus == bus;
-        CHECK(n == want);
-        for (size_t i = 0; i < n; i++) {
-            CHECK(in_manifest(bus, ids[i]));
-            for (size_t k = 0; k < i; k++) CHECK(ids[k] != ids[i]);
-        }
-        CHECK(can_route_fast_ids((uint8_t)bus, ids, 2) == 2);     // respects the caller's limit
-    }
+    can_route_forward_commit();
+    CHECK(can_route_classify(1, 0x7E0, false) == 0);
 }
 
 static void diag_record_layout(void)
@@ -767,7 +702,7 @@ int main(void)
     filters_route_fast_and_bulk();
     accept_all_fast_filter_for_the_self_test();
     fast_ids_beyond_the_filter_budget_stay_on_bulk();
-    fitted_filters_receive_only_what_was_asked_for();
+    no_priority_ids_still_receives_the_whole_bus();
     long_random_stream_is_complete_and_ordered();
     fast_lane_is_served_before_a_backlog();
     bulk_lanes_take_turns();
@@ -779,9 +714,8 @@ int main(void)
     transmit_encodes_frames();
     transmit_reports_a_full_fifo();
     idle_step_is_one_transfer();
-    route_default_is_the_manifest();
+    route_forwards_nothing_without_a_list();
     route_app_list_is_a_subscription();
-    route_fast_ids_fit_the_filter_budget();
 
     if (failures) {
         printf("%d check(s) FAILED\n", failures);

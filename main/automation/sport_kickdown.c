@@ -170,7 +170,7 @@ static void on_pedal_frame(void)
     }
 }
 
-// Decodes the frame itself: the value cache only holds the bus-1 copy.
+// Decodes the frame itself, so the copy on each bus is logged.
 static void log_pt_change(uint8_t bus, const can_frame_t *f)
 {
     static uint8_t last[2][7];

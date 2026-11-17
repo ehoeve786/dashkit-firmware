@@ -1,8 +1,12 @@
 #include "can_filter.h"
+#include "can_manager.h"
 
 #include "esp_log.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/semphr.h"
+#include "sdkconfig.h"
+
+#include "can_route.h"
 
 static const char *TAG = "can_filter";
 
@@ -74,7 +78,15 @@ esp_err_t can_filter_set(const uint8_t *data, size_t len)
     }
 
     s_count = new_count;
+    // The per-frame decision is made by can_route (lock-free bit lookups), so mirror the accepted list into it.
+    // An empty list returns to the default of forwarding the manifest ids.
+    can_route_forward_begin();
+    for (size_t i = 0; i < new_count; i++) {
+        can_route_forward_add(s_entries[i].bus_id, s_entries[i].addr);
+    }
+    can_route_forward_commit(new_count);
     xSemaphoreGive(s_lock);
+    can_manager_apply_filters();
 
     ESP_LOGI(TAG, "Filter updated from %u-byte write: %u entries%s",
              (unsigned)len, (unsigned)new_count,
@@ -89,18 +101,14 @@ esp_err_t can_filter_set(const uint8_t *data, size_t len)
     return ESP_OK;
 }
 
-bool can_filter_should_forward(uint8_t bus_id, uint32_t addr)
+size_t can_filter_ids(uint8_t bus_id, uint16_t *out, size_t max)
 {
-    if (!s_lock) return true;
-
+    size_t k = 0;
+    if (!s_lock) return 0;
     xSemaphoreTake(s_lock, portMAX_DELAY);
-    size_t count = s_count;
-    bool match = (count == 0);  // Empty filter = forward all
-    for (size_t i = 0; i < count && !match; i++) {
-        if (s_entries[i].bus_id == bus_id && s_entries[i].addr == addr) {
-            match = true;
-        }
-    }
+    for (size_t i = 0; i < s_count && k < max; i++)
+        if (s_entries[i].bus_id == bus_id && (s_entries[i].addr <= 0x7FF || s_entries[i].addr == CAN_ROUTE_ADDR_ALL))
+            out[k++] = (uint16_t)s_entries[i].addr;  // ALL arrives as 0xFFFF
     xSemaphoreGive(s_lock);
-    return match;
+    return k;
 }

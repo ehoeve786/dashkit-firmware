@@ -18,6 +18,17 @@ esp_err_t ble_server_notify(const uint8_t *data, size_t len);
 // Check if a client is connected and subscribed to notifications
 bool ble_server_is_connected(void);
 
+// Largest notification the active phone accepts (ATT MTU - 3); 0 if none.
+size_t ble_server_max_payload(void);
+
+// Compact CAN packets, asked for by the app (VC_CMD_COMPACT).
+// Fills a CAN_DIAG_ID_LINK record for the active phone.
+void ble_server_link_diag(uint8_t d[8]);
+
+uint32_t ble_server_pings(void);  // keepalive pings received since boot
+void ble_server_set_compact(bool on);
+bool ble_server_compact(void);
+
 // Get the current BLE connection handle (BLE_HS_CONN_HANDLE_NONE if not connected)
 uint16_t ble_server_get_conn_handle(void);
 

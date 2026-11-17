@@ -91,6 +91,9 @@ jobs:
         # pin only together with a full tools/gen_proto.py regeneration.
         run: pip install nanopb==0.4.9.1 grpcio-tools
 
+      - name: Run CAN host tests (DBC engine, MCP251xFD core against a chip model, routing)
+        run: bash tools/test/run_can_stream_test.sh
+
       - name: Verify vendored Tesla protos + generated bindings are in sync
         run: bash tools/check_proto_sync.sh
 

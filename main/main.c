@@ -18,6 +18,7 @@
 #include "esp_ota_ops.h"
 #include "esp_system.h"
 #include "esp_timer.h"
+#include "can_diag.h"
 #include "nvs_flash.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
@@ -56,52 +57,81 @@ static void mark_app_valid_cb(void *arg)
     }
 }
 
-#define BLE_BATCH_MAX_FRAMES  16
+#define BLE_BATCH_MAX_FRAMES  46   // compact frames in a 512-byte MTU
 #define BLE_BATCH_TIMEOUT_MS  20
+#define BLE_COMPACT_MARK      0x80 // first byte of a compact packet; the original format starts with a count < 0x80
 
-// Build a DashPilot-compatible BLE packet from CAN frames.
-// Format: [count][timestamp_us_LE32, bus, addr_LE32, len, data...]...
-static size_t build_ble_packet(const can_tagged_frame_t *frames, int count, uint8_t *buf, size_t buf_size)
+// Compact frames carry an 11-bit id and a bus below 32. Others (the firmware's diagnostic records) keep the
+// original format.
+static bool fits_compact(const can_tagged_frame_t *f)
 {
-    size_t pos = 0;
+    return !f->frame.extended && f->frame.id <= 0x7FF && f->bus_id < 32;
+}
 
-    if (count <= 0 || pos >= buf_size) return 0;
-
-    buf[pos++] = (uint8_t)count;
-
-    for (int i = 0; i < count && pos < buf_size; i++) {
-        const can_tagged_frame_t *f = &frames[i];
-        uint8_t data_len = f->frame.dlc;
-        if (data_len > 8) data_len = 8;  // DashPilot expects classic CAN (max 8)
-
-        // Check we have room: timestamp(4) + bus(1) + addr(4) + len(1) + data(n)
-        if (pos + 10 + data_len > buf_size) {
-            buf[0] = (uint8_t)i;  // Adjust count to what we actually packed
-            break;
+// Packs frames [*from, count) until the buffer is full and moves *from past the ones packed (or skipped).
+//   original: [count][timestamp_us LE32, bus, id LE32, len, data]...   18 bytes per 8-byte frame
+//   compact:  [0x80][id | bus << 11 (LE16), len, data]...              11 bytes, no timestamp (the app never read it)
+// A compact packet skips frames that don't fit the format; the caller then sends only those (rest) in the original.
+static size_t build_ble_packet(const can_tagged_frame_t *frames, int count, int *from, uint8_t *buf, size_t buf_size,
+                               bool compact, bool rest)
+{
+    size_t pos = 1;
+    uint8_t n = 0;
+    for (; *from < count; (*from)++) {
+        const can_tagged_frame_t *f = &frames[*from];
+        if (compact ? !fits_compact(f) : rest && fits_compact(f)) continue;
+        uint8_t len = f->frame.dlc > 8 ? 8 : f->frame.dlc;  // DashPilot expects classic CAN (max 8)
+        if (pos + (compact ? 3 : 10) + len > buf_size) break;
+        if (compact) {
+            uint16_t h = (uint16_t)(f->frame.id | f->bus_id << 11);
+            buf[pos++] = (uint8_t)h;
+            buf[pos++] = (uint8_t)(h >> 8);
+        } else {
+            uint32_t ts = f->timestamp_us, id = f->frame.id;
+            memcpy(&buf[pos], &ts, 4);  // little-endian CPU
+            buf[pos + 4] = f->bus_id;
+            memcpy(&buf[pos + 5], &id, 4);
+            pos += 9;
         }
-
-        // Timestamp in little-endian 32-bit (microseconds since boot)
-        uint32_t ts = f->timestamp_us;
-        buf[pos++] = (ts >>  0) & 0xFF;
-        buf[pos++] = (ts >>  8) & 0xFF;
-        buf[pos++] = (ts >> 16) & 0xFF;
-        buf[pos++] = (ts >> 24) & 0xFF;
-
-        buf[pos++] = f->bus_id;
-
-        // Address in little-endian 32-bit
-        uint32_t id = f->frame.id;
-        buf[pos++] = (id >>  0) & 0xFF;
-        buf[pos++] = (id >>  8) & 0xFF;
-        buf[pos++] = (id >> 16) & 0xFF;
-        buf[pos++] = (id >> 24) & 0xFF;
-
-        buf[pos++] = data_len;
-        memcpy(&buf[pos], f->frame.data, data_len);
-        pos += data_len;
+        buf[pos++] = len;
+        memcpy(&buf[pos], f->frame.data, len);
+        pos += len;
+        n++;
     }
+    buf[0] = compact ? BLE_COMPACT_MARK : n;
+    return n ? pos : 0;
+}
 
-    return pos;
+// A busy link returns ESP_ERR_NO_MEM: wait for it (up to 200 ms) instead of dropping the packet. Meanwhile the CAN
+// queue fills and its drops are counted, so loss shows in the diagnostics.
+static uint32_t s_tx_pkts, s_tx_bytes, s_tx_waits, s_tx_dropped;
+
+static void notify_wait(const uint8_t *buf, size_t len)
+{
+    if (!len) return;
+    esp_err_t err;
+    for (int t = 0; (err = ble_server_notify(buf, len)) == ESP_ERR_NO_MEM && t < 200; t++) {
+        s_tx_waits++;
+        vTaskDelay(1);
+    }
+    if (err == ESP_OK) { s_tx_pkts++; s_tx_bytes += len; } else s_tx_dropped++;
+}
+
+// Link records for the app's CAN log, every 5 s (no-ops while diagnostics are off).
+static void link_diag(void)
+{
+    static int64_t last;
+    int64_t now = esp_timer_get_time();
+    if (now - last < 5000000) return;
+    last = now;
+    uint8_t d[8];
+    ble_server_link_diag(d);
+    can_diag_emit(0, CAN_DIAG_ID_LINK, d);
+    can_diag_pack4(d, s_tx_pkts / 5, s_tx_bytes / 80, s_tx_waits, s_tx_dropped);
+    can_diag_emit(0, CAN_DIAG_ID_LINK_TX, d);
+    can_diag_pack4(d, ble_server_pings(), can_manager_bulk_gap_ms(), 0, 0);
+    can_diag_emit(0, CAN_DIAG_ID_LINK_RX, d);
+    s_tx_pkts = s_tx_bytes = s_tx_waits = 0;
 }
 
 // Task that bridges CAN frames to BLE notifications
@@ -112,24 +142,31 @@ static void can_to_ble_task(void *arg)
     static uint8_t ble_buf[512];
 
     while (true) {
-        int count = 0;
+        if (can_manager_receive(&batch[0], 100) != ESP_OK) continue;
+        // As many frames as one notification to this phone holds.
+        size_t max = ble_server_max_payload();
+        if (max > sizeof(ble_buf)) max = sizeof(ble_buf);
+        bool compact = ble_server_compact();
+        int want = max < 19 ? 1 : (int)((max - 1) / (compact ? 11 : 18));
+        if (want > BLE_BATCH_MAX_FRAMES) want = BLE_BATCH_MAX_FRAMES;
 
-        if (can_manager_receive(&batch[0], 100) == ESP_OK) {
-            count = 1;
+        // Wait for frames only up to the original 16 per packet (latency as before); beyond that take just what
+        // is already queued, so packets grow only when the link is behind.
+        int count = 1;
+        while (count < want && can_manager_receive(&batch[count], count < 16 ? BLE_BATCH_TIMEOUT_MS : 0) == ESP_OK) count++;
+        if (!max) continue;  // no phone
+        link_diag();
 
-            while (count < BLE_BATCH_MAX_FRAMES) {
-                if (can_manager_receive(&batch[count], BLE_BATCH_TIMEOUT_MS) != ESP_OK) {
-                    break;
-                }
-                count++;
-            }
-
-            // Send over BLE if connected
-            if (ble_server_is_connected()) {
-                size_t pkt_len = build_ble_packet(batch, count, ble_buf, sizeof(ble_buf));
-                if (pkt_len > 0) {
-                    ble_server_notify(ble_buf, pkt_len);
-                }
+        for (int from = 0; from < count; ) {
+            int before = from;
+            notify_wait(ble_buf, build_ble_packet(batch, count, &from, ble_buf, max, compact, false));
+            if (from == before) break;  // a frame larger than the MTU: drop the rest
+        }
+        if (compact) {
+            for (int from = 0; from < count; ) {
+                int before = from;
+                notify_wait(ble_buf, build_ble_packet(batch, count, &from, ble_buf, max, false, true));
+                if (from == before) break;
             }
         }
     }

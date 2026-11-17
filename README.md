@@ -133,6 +133,23 @@ For verbose CAN frame and status logging, uncomment `CONFIG_DASHKIT_DEBUG_LOG=y`
 
 Run `idf.py fullclean && idf.py build` after changing options.
 
+### CAN reception
+
+The app chooses which CAN ids it gets, with no firmware change and no limit from the controllers' 32 hardware filters:
+
+- Ids the firmware itself reads or injects have exact filters into a dedicated **fast-lane** FIFO that is always drained first, so vehicle controls see their frames even when the bus is flooded.
+- The remaining filters feed four bulk FIFOs, read in chunks of 8. They take the ids in `dbc/used_messages.txt` plus whatever the app lists in the CAN filter characteristic (any standard id on either bus); when there are more ids than filters, neighbours share a masked filter and the extras are dropped in software. The controller never sees the rest of the bus.
+- When the app lists `0xFFFFFFFF` for a bus (DashPilot's **Log every frame**), the bulk FIFOs take every frame on it. Frames the app asked for by id still go first over BLE.
+- Until the app writes the characteristic, and after it disconnects, the manifest ids are received and forwarded.
+
+Every 5 s the log shows, per bus, `stream: fast … fps (ovf …) bulk … fps (ovf …) tx … (full …) step max … us` and one `route:` line with what was seen, used and forwarded. The fast-lane overflow count must stay 0.
+
+Host tests for this path (no ESP-IDF needed): `bash tools/test/run_can_stream_test.sh`.
+
+### Diagnostic records
+
+Control opcode `0x51` (value 1/0) makes the firmware add diagnostic records to the CAN stream it sends over BLE: per-bus receive statistics every 5 s and the outcome of every door unlatch (frames sent, TX-full refusals, delay from the car's frame to ours). The records have bus byte `0x10 | bus` and ids `0x1DA5xxxx`, so they cannot be confused with CAN frames; `main/can/can_diag.h` documents each layout. DashPilot's developer option **Record CAN log** switches them on and writes them to a CSV with the frames.
+
 ## Project Layout
 
 | Path | Contents |

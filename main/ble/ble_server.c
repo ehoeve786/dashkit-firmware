@@ -3,6 +3,7 @@
 #include "ble_appchan.h"
 #include "bthome.h"
 #include "can_filter.h"
+#include "can_diag.h"
 #include "can_manager.h"
 #include "can_interface.h"
 #include "vehicle_control.h"
@@ -91,6 +92,9 @@ typedef struct {
 static conn_slot_t s_conns[MAX_CONNS];
 static uint32_t    s_sub_seq_counter = 0;
 static volatile uint16_t s_active_handle = BLE_HS_CONN_HANDLE_NONE;
+static volatile bool s_compact;  // the app asked for compact CAN packets
+static volatile uint32_t s_pings;  // keepalive pings received since boot
+static volatile uint16_t s_tx_octets = 27;  // link-layer packet size of the latest connection (27 until extended)
 static uint16_t s_chr_val_handle;
 
 // A connection that has not established encryption within this time is dropped,
@@ -334,6 +338,10 @@ static int gap_event_handler(struct ble_gap_event *event, void *arg)
                  slot->subscribed, bond_count(), conn_count(), MAX_CONNS);
         ble_att_set_preferred_mtu(512);
         ble_gattc_exchange_mtu(slot->handle, NULL, NULL);
+        // Send full-length radio packets (251 bytes instead of the default 27): without this the CAN stream
+        // tops out near 40 kB/s on 1M. Harmless if the phone doesn't support it.
+        s_tx_octets = 27;
+        ble_gap_set_data_len(slot->handle, 251, 2120);
         // Keep advertising while slots remain.
         start_advertising();
         break;
@@ -358,6 +366,8 @@ static int gap_event_handler(struct ble_gap_event *event, void *arg)
             if (conn_count() == 0) {
                 // Reset the CAN filter to pass-through for the next client.
                 can_filter_set(NULL, 0);
+                can_diag_set_enabled(false);
+                s_compact = false;
             }
         }
         start_advertising();
@@ -386,6 +396,11 @@ static int gap_event_handler(struct ble_gap_event *event, void *arg)
 
     case BLE_GAP_EVENT_ADV_COMPLETE:
         start_advertising();
+        break;
+
+    case BLE_GAP_EVENT_DATA_LEN_CHG:
+        s_tx_octets = event->data_len_chg.max_tx_octets;
+        ESP_LOGI(TAG, "Data length: tx %u, rx %u", event->data_len_chg.max_tx_octets, event->data_len_chg.max_rx_octets);
         break;
 
     case BLE_GAP_EVENT_PHY_UPDATE_COMPLETE: {
@@ -608,7 +623,7 @@ static int gatt_filter_access(uint16_t conn_handle, uint16_t attr_handle,
     }
 
     uint16_t len = OS_MBUF_PKTLEN(ctxt->om);
-    uint8_t buf[256];
+    static uint8_t buf[512];  // ATT max attribute length; static: the BLE host task's stack is small
     if (len > sizeof(buf)) {
         ESP_LOGW(TAG, "Filter write too large (%u bytes)", len);
         return BLE_ATT_ERR_INVALID_ATTR_VALUE_LEN;
@@ -695,6 +710,7 @@ static int gatt_control_access(uint16_t conn_handle, uint16_t attr_handle,
             // Timestamp before flag, so the checker never sees the flag alone.
             slot->last_ping_s = now_s();
             slot->ping_seen = true;
+            s_pings++;
         }
         return 0;
     }
@@ -745,7 +761,9 @@ static const struct ble_gatt_svc_def s_can_svc_def[] = {
             {
                 .uuid = &s_control_uuid.u,
                 .access_cb = gatt_control_access,
-                .flags = BLE_GATT_CHR_F_WRITE | BLE_GATT_CHR_F_WRITE_ENC,
+                // WRITE_NO_RSP: the app's keepalive needs no reply. With the link saturated (a full capture during
+                // a phone call) a reply could go missing for 30 s, and Android then dropped the connection.
+                .flags = BLE_GATT_CHR_F_WRITE | BLE_GATT_CHR_F_WRITE_NO_RSP | BLE_GATT_CHR_F_WRITE_ENC,
             },
             {
                 .uuid = &s_version_uuid.u,
@@ -895,17 +913,57 @@ esp_err_t ble_server_notify(const uint8_t *data, size_t len)
         return ESP_ERR_INVALID_STATE;
     }
 
-    struct os_mbuf *om = ble_hs_mbuf_from_flat(data, len);
+    // NimBLE has two buffer pools and takes every small allocation (an ATT response, a notification's header)
+    // from the first: 12 blocks. ble_hs_mbuf_from_flat() put the CAN payload there too, so a busy stream kept it
+    // empty and a write from the app got no response at all: commands were lost and Android dropped the link 30 s
+    // later. The payload now comes from the second pool (24 blocks, otherwise unused), and at most ~5 full packets
+    // wait for the radio (each holds 1 block of the first pool and 2 of the second), which leaves the first pool
+    // at least 4 blocks for the stack and bounds the backlog on a slow link.
+    if (os_msys_num_free() < 20) {
+        return ESP_ERR_NO_MEM;
+    }
+    struct os_mbuf *om = os_msys_get_pkthdr(256, 0);  // 256: too large for the first pool's blocks
+    if (om && os_mbuf_copyinto(om, 0, data, len) != 0) {
+        os_mbuf_free_chain(om);
+        om = NULL;
+    }
     if (!om) {
         return ESP_ERR_NO_MEM;
     }
     int rc = ble_gatts_notify_custom(conn, s_chr_val_handle, om);
+    if (rc == BLE_HS_ENOMEM) {
+        return ESP_ERR_NO_MEM;  // link busy: the caller retries
+    }
     if (rc != 0) {
         ESP_LOGW(TAG, "Notify failed (handle=%d): %d", conn, rc);
         return ESP_FAIL;
     }
     return ESP_OK;
 }
+
+size_t ble_server_max_payload(void)
+{
+    uint16_t mtu = ble_att_mtu(s_active_handle);  // 0 if not connected
+    return mtu > 3 ? mtu - 3 : 0;
+}
+
+void ble_server_link_diag(uint8_t d[8])
+{
+    uint16_t conn = s_active_handle;
+    struct ble_gap_conn_desc desc = {0};
+    uint8_t tx_phy = 0, rx_phy = 0;
+    ble_gap_conn_find(conn, &desc);
+    ble_gap_read_le_phy(conn, &tx_phy, &rx_phy);
+    can_diag_put16(d, ble_att_mtu(conn));
+    can_diag_put16(d + 2, s_tx_octets);
+    d[4] = tx_phy;
+    d[5] = rx_phy;
+    can_diag_put16(d + 6, desc.conn_itvl);
+}
+
+uint32_t ble_server_pings(void) { return s_pings; }
+void ble_server_set_compact(bool on) { s_compact = on; }
+bool ble_server_compact(void) { return s_compact; }
 
 bool ble_server_is_connected(void)
 {

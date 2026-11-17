@@ -93,6 +93,16 @@ typedef enum {
     // 0x1F9 cadence. Refused while in R/N/D or moving.
     // value: 0=front left (driver), 1=front right, 2=rear left, 3=rear right.
     VC_CMD_DOOR_UNLATCH = 0x50,
+
+    // --- Diagnostic records for the app's CAN log (can_diag.h) ---
+    // value: 1 = on (answers with a HELLO record), 0 = off. Not persisted;
+    // switched off when the last phone disconnects.
+    VC_CMD_DIAG_LOG = 0x51,
+
+    // --- Compact CAN packets (see build_ble_packet in main.c) ---
+    // value: 1 = on, 0 = off. Not persisted; off again when the last phone
+    // disconnects, so an app that never asks keeps the original format.
+    VC_CMD_COMPACT = 0x52,
 } vehicle_control_opcode_t;
 
 // RX hook (called by can_manager for every received frame): phase-locks an

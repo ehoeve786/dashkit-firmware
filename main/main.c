@@ -129,7 +129,8 @@ static void link_diag(void)
     can_diag_emit(0, CAN_DIAG_ID_LINK, d);
     can_diag_pack4(d, s_tx_pkts / 5, s_tx_bytes / 80, s_tx_waits, s_tx_dropped);
     can_diag_emit(0, CAN_DIAG_ID_LINK_TX, d);
-    can_diag_pack4(d, ble_server_pings(), can_manager_bulk_gap_ms(), 0, 0);
+    uint32_t car = tesla_ble_link_diag();
+    can_diag_pack4(d, ble_server_pings(), can_manager_bulk_gap_ms(), (uint16_t)(car >> 8), car & 0xFF);
     can_diag_emit(0, CAN_DIAG_ID_LINK_RX, d);
     s_tx_pkts = s_tx_bytes = s_tx_waits = 0;
 }

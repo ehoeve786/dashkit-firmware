@@ -48,6 +48,8 @@
 #define CAN_DIAG_ID_LINK_TX   0x1DA50031u
 // [0..1] keepalive pings received from the app since boot
 // [2..3] thinning of whole-bus frames right now: one frame per id per this many ms (0 = none)
+// [4..5] connection attempts from the DashKit to the car's own Bluetooth (vehicle key) since boot
+// [6..7] that link's state: 0 idle, 1 connecting, 2 discovering, 3 subscribing, 4 ready, 5 disconnecting
 #define CAN_DIAG_ID_LINK_RX   0x1DA50032u
 
 static inline uint16_t can_diag_sat16(uint32_t v) { return v > 0xFFFFu ? 0xFFFFu : (uint16_t)v; }

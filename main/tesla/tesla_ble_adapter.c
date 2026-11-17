@@ -582,8 +582,16 @@ static void central_abort_and_wait(uint32_t timeout_ms)
     s_central.conn_handle = 0;
 }
 
+static uint16_t s_connect_attempts;
+
+uint32_t tesla_ble_link_diag(void)
+{
+    return (uint32_t)s_connect_attempts << 8 | (uint8_t)s_central.state;
+}
+
 esp_err_t tesla_ble_connect(const void *addr, uint32_t timeout_ms)
 {
+    s_connect_attempts++;
     esp_err_t err;
 
     if (addr == NULL) {

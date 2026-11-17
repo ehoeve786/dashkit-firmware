@@ -59,6 +59,10 @@ esp_err_t tesla_ble_keepalive(void);
 // connected.
 void tesla_ble_disconnect(void);
 
+// For the CAN log's link record: connection attempts to the car since boot (bits 8..23) and the link state
+// (bits 0..7: 0 idle, 1 connecting, 2 discovering, 3 subscribing, 4 ready, 5 disconnecting).
+uint32_t tesla_ble_link_diag(void);
+
 #ifdef __cplusplus
 }
 #endif

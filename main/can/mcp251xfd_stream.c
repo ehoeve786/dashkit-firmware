@@ -31,7 +31,7 @@
 // Filter control byte: enabled, storing into FIFO n.
 #define FLT_ENABLE(fifo)    (0x80u | ((fifo) & 0x1Fu))
 #define MASK_SID_ALL        0x7FFu
-#define MASK_SID_LOW2       0x003u
+#define MASK_SID_LANE       (3u << MCPFD_BULK_LANE_SHIFT)
 
 // FIFOCON values we configure, so run-time writes need no read-modify-write.
 #define RX_CON(depth)   ((((uint32_t)(depth) - 1) << FIFOCON_FSIZE_SHIFT) | FIFOCON_TFNRFNIE)
@@ -155,11 +155,11 @@ esp_err_t mcpfd_stream_filters_program(mcpfd_stream_t *s, const uint16_t *fast_i
         f++;
     }
 
-    // Then everything else: four filters on the two low id bits, one bulk lane each, so a given id always lands
+    // Then everything else: four filters on two id bits, one bulk lane each, so a given id always lands
     // in the same lane and per-id ordering is preserved.
     for (int k = 0; k < MCPFD_BULK_LANES && err == ESP_OK; k++, f++) {
-        err = reg_write32(s, REG_C1FLTOBJ(f), (uint32_t)k);
-        if (err == ESP_OK) err = reg_write32(s, REG_C1MASK(f), MASK_SID_LOW2);
+        err = reg_write32(s, REG_C1FLTOBJ(f), (uint32_t)k << MCPFD_BULK_LANE_SHIFT);
+        if (err == ESP_OK) err = reg_write32(s, REG_C1MASK(f), MASK_SID_LANE);
         con[f / 4] |= FLT_ENABLE(MCPFD_FIFO_BULK0 + k) << ((f % 4) * 8);
     }
 

@@ -32,6 +32,10 @@
 #define MCPFD_FIFO_TX         2      // TX
 #define MCPFD_FIFO_BULK0      3      // RX, bulk lanes: FIFO 3..6
 #define MCPFD_BULK_LANES      4
+// Bulk lane of a standard id: bits 4-5. On a Tesla the low id bits are far from evenly used (one lane took over
+// half of a bus), which overflowed that lane at peak load while the others sat empty; these two split it evenly.
+#define MCPFD_BULK_LANE_SHIFT  4
+#define MCPFD_BULK_LANE(id)    (((id) >> MCPFD_BULK_LANE_SHIFT) & 3)
 #define MCPFD_FAST_DEPTH      20
 #define MCPFD_TX_DEPTH        4
 #define MCPFD_BULK_DEPTH      26

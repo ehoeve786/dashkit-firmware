@@ -363,13 +363,13 @@ static void filters_route_fast_and_bulk(void)
     static rig_t r;
     rig_init(&r);
     for (size_t i = 0; i < NFAST; i++) CHECK(rig_inject(&r, kFast[i]) == MCPFD_FIFO_FAST);
-    // Every other id is accepted, by its two low bits.
+    // Every other id is accepted, by its lane bits.
     for (uint32_t id = 0; id < 2048; id++) {
         bool fast = false;
         for (size_t i = 0; i < NFAST; i++) fast |= (kFast[i] == id);
         if (fast) continue;
         int fifo = rig_inject(&r, id);
-        CHECK(fifo == MCPFD_FIFO_BULK0 + (int)(id & 3) || fifo == -1);
+        CHECK(fifo == MCPFD_FIFO_BULK0 + (int)MCPFD_BULK_LANE(id) || fifo == -1);
         rig_drain(&r);
     }
     rig_check_all_delivered(&r);
@@ -397,8 +397,8 @@ static void fast_ids_beyond_the_filter_budget_stay_on_bulk(void)
     CHECK(mcpfd_stream_filters_program(&r.s, ids, 40) == ESP_OK);
     CHECK(rig_inject(&r, 0x100) == MCPFD_FIFO_FAST);
     CHECK(rig_inject(&r, 0x100 + MCPFD_MAX_FAST_IDS) == MCPFD_FIFO_FAST);          // the 28th distinct id
-    CHECK(rig_inject(&r, 0x100 + MCPFD_MAX_FAST_IDS + 1) == MCPFD_FIFO_BULK0 + ((0x100 + MCPFD_MAX_FAST_IDS + 1) & 3));
-    CHECK(rig_inject(&r, 0x100 + 39) == MCPFD_FIFO_BULK0 + ((0x100 + 39) & 3));   // still received
+    CHECK(rig_inject(&r, 0x100 + MCPFD_MAX_FAST_IDS + 1) == MCPFD_FIFO_BULK0 + MCPFD_BULK_LANE(0x100 + MCPFD_MAX_FAST_IDS + 1));
+    CHECK(rig_inject(&r, 0x100 + 39) == MCPFD_FIFO_BULK0 + MCPFD_BULK_LANE(0x100 + 39));   // still received
     rig_drain(&r);
     rig_check_all_delivered(&r);
 }
@@ -409,7 +409,7 @@ static void no_priority_ids_still_receives_the_whole_bus(void)
     rig_init(&r);
     CHECK(mcpfd_stream_filters_program(&r.s, NULL, 0) == ESP_OK);
     for (uint32_t id = 0; id < 2048; id += 97) {
-        CHECK(rig_inject(&r, id) == MCPFD_FIFO_BULK0 + (int)(id & 3));
+        CHECK(rig_inject(&r, id) == MCPFD_FIFO_BULK0 + (int)MCPFD_BULK_LANE(id));
         rig_drain(&r);
     }
     rig_check_all_delivered(&r);
@@ -469,7 +469,7 @@ static void bulk_lanes_take_turns(void)
 {
     static rig_t r;
     rig_init(&r);
-    for (int i = 0; i < 20; i++) for (uint32_t k = 0; k < 4; k++) rig_inject(&r, 0x500 + k);
+    for (int i = 0; i < 20; i++) for (uint32_t k = 0; k < 4; k++) rig_inject(&r, 0x500 + (k << MCPFD_BULK_LANE_SHIFT));
     // Four steps, four different lanes: no lane waits behind another's backlog.
     uint32_t before[4], seen = 0;
     for (int k = 0; k < 4; k++) before[k] = r.s.stats.rx_frames[1 + k];
@@ -504,7 +504,7 @@ static void overflow_stays_on_the_flooded_lane(void)
     static rig_t r;
     rig_init(&r);
     int lost = 0;
-    for (int i = 0; i < MCPFD_BULK_DEPTH + 9; i++) lost += rig_inject(&r, 0x402) < 0;   // lane 2 only
+    for (int i = 0; i < MCPFD_BULK_DEPTH + 9; i++) lost += rig_inject(&r, 0x400 + (2 << MCPFD_BULK_LANE_SHIFT)) < 0;   // lane 2 only
     CHECK(lost == 9);
     for (int i = 0; i < 5; i++) CHECK(rig_inject(&r, 0x1F9) == MCPFD_FIFO_FAST);
     rig_drain(&r);

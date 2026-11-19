@@ -101,16 +101,23 @@ static void route_report_cb(void *arg)
 }
 
 // USB serial link with the comma 3X (USB-Serial-JTAG driver, not the log console: its no-driver path can wedge
-// for good when the host drops mid-line). Writes never block and are dropped while no host reads.
-//  out: chassis-bus (0) frames the C3X can't see, as "F,<id>,<hex>": DAS_lanes 0x239, DAS_carLog 0x5D9,
-//       DAS_autopilotDebug 0x247, UI_gpsVehicleSpeed 0x2F8, APP_frontParkAssistData 0x34B (~35 frames/s). The CAN
-//       RX path only queues them (never blocks; dropped if 16 are already waiting).
+// for good when the host drops mid-line). Writes never block; a line that doesn't fit is dropped whole.
+//  out: "A,<bus>,<id>,<hex>" (id: 3 hex digits, 8 if extended), batched:
+//       - always: the chassis-bus (0) frames the C3X can't see: DAS_lanes 0x239, DAS_carLog 0x5D9,
+//         DAS_autopilotDebug 0x247, UI_gpsVehicleSpeed 0x2F8, APP_frontParkAssistData 0x34B (~35 frames/s);
+//       - while the app takes a whole bus ("Log every frame") and the C3X is up: that bus's frames (0 and 1, all of
+//         them), here instead of over BLE (which keeps the ids the app asked for by id). The C3X records them.
+//       Once a second while the C3X is up: "S,<queue drops>,<write drops>" (totals since boot).
+//       The CAN RX path only queues (never blocks; dropped if the queue is full).
 //  in:  "C,<bus>,<id>,<hex>" frames for the app only (never sent on CAN): bus 1 id 0x7F0 = openpilot state
 //       (COMMA_status), bus 2 = the C3X's party bus, bus 3 = its Autopilot side. Anything else, or a line that isn't
 //       exactly one frame (a write cut short on the C3X), is dropped. No status for 2 s (C3X off or unplugged): one
-//       all-zero COMMA_status clears it.
+//       all-zero COMMA_status clears it, and whole buses go back to BLE.
 #define COMMA_ID 0x7F0
+typedef struct { uint32_t id; uint8_t bus, dlc, ext, data[8]; } c3x_frame_t;
 static QueueHandle_t    s_c3x_q = NULL;
+static volatile bool    s_c3x_up;
+static volatile uint32_t s_c3x_qdrop, s_c3x_wdrop;
 
 static bool c3x_line(char *in, int len)
 {
@@ -132,44 +139,76 @@ static bool c3x_line(char *in, int len)
     return bus == 1;
 }
 
+static int a_line(char *o, const c3x_frame_t *f)
+{
+    static const char hx[] = "0123456789abcdef";
+    char *p = o;
+    *p++ = 'A'; *p++ = ','; *p++ = '0' + f->bus; *p++ = ',';
+    int nd = f->ext ? 8 : 3;
+    for (int i = nd - 1; i >= 0; i--) p[i] = hx[(f->id >> (4 * (nd - 1 - i))) & 15];
+    p += nd;
+    *p++ = ',';
+    for (int i = 0; i < f->dlc; i++) { *p++ = hx[f->data[i] >> 4]; *p++ = hx[f->data[i] & 15]; }
+    *p++ = '\n';
+    return p - o;
+}
+
 static void lanes_task(void *arg)
 {
-    can_frame_t f;
+    static char out[1024];
+    c3x_frame_t f;
     char b[48], in[48];
     int il = 0;
-    int64_t last_c = 0;
+    int64_t last_c = 0, last_s = 0;
     for (;;) {
         int r;
         while ((r = usb_serial_jtag_read_bytes(b, sizeof(b), 0)) > 0) {
             for (int i = 0; i < r; i++) {
                 if (b[i] != '\n') { if (il < (int)sizeof(in) - 1) in[il++] = b[i]; continue; }
                 in[il] = 0;
-                if (c3x_line(in, il)) last_c = esp_timer_get_time();
+                if (c3x_line(in, il)) { last_c = esp_timer_get_time(); s_c3x_up = true; }
                 il = 0;
             }
         }
-        if (last_c && esp_timer_get_time() - last_c > 2000000) {
+        int64_t now = esp_timer_get_time();
+        if (last_c && now - last_c > 2000000) {
             char z[] = "C,1,7f0,0000000000000000";
             c3x_line(z, sizeof(z) - 1);
             last_c = 0;
+            s_c3x_up = false;
         }
-        if (xQueueReceive(s_c3x_q, &f, pdMS_TO_TICKS(10)) != pdTRUE) continue;  // 10 ms: ~350 C3X lines/s come in
-        int n = snprintf(b, sizeof(b), "F,%03lx,", (unsigned long)f.id);
-        for (int i = 0; i < f.dlc && i < 8; i++) n += snprintf(b + n, sizeof(b) - n, "%02x", f.data[i]);
-        b[n++] = '\n';
-        usb_serial_jtag_write_bytes(b, n, 0);
+        int n = 0, lines = 0;
+        if (s_c3x_up && now - last_s >= 1000000) {
+            last_s = now;
+            n = snprintf(out, sizeof(out), "S,%lu,%lu\n", (unsigned long)s_c3x_qdrop, (unsigned long)s_c3x_wdrop);
+        }
+        // 10 ms wait when idle: ~350 C3X lines/s come in
+        if (xQueueReceive(s_c3x_q, &f, n ? 0 : pdMS_TO_TICKS(10)) == pdTRUE) {
+            do { n += a_line(out + n, &f); lines++; }
+            while (n < (int)sizeof(out) - 32 && xQueueReceive(s_c3x_q, &f, 0) == pdTRUE);
+        }
+        if (n && usb_serial_jtag_write_bytes(out, n, 0) != n) s_c3x_wdrop += lines;
     }
 }
 
-// Chassis-bus frames the comma 3X gets over USB.
-static inline void c3x_tap(const can_tagged_frame_t *frame)
+static void c3x_queue(const can_tagged_frame_t *t)
 {
-    if (frame->bus_id == 0 && !frame->frame.extended) {
-        switch (frame->frame.id) {
-        case 0x239: case 0x5D9: case 0x247: case 0x2F8: case 0x34B:
-            xQueueSend(s_c3x_q, &frame->frame, 0);
-        }
+    c3x_frame_t f = { .id = t->frame.id, .bus = t->bus_id, .dlc = t->frame.dlc > 8 ? 8 : t->frame.dlc,
+                      .ext = t->frame.extended };
+    memcpy(f.data, t->frame.data, f.dlc);
+    if (xQueueSend(s_c3x_q, &f, 0) != pdTRUE) s_c3x_qdrop++;
+}
+
+// Chassis-bus frames the comma 3X always gets over USB.
+static inline bool c3x_tap(const can_tagged_frame_t *frame)
+{
+    if (frame->bus_id != 0 || frame->frame.extended) return false;
+    switch (frame->frame.id) {
+    case 0x239: case 0x5D9: case 0x247: case 0x2F8: case 0x34B:
+        c3x_queue(frame);
+        return true;
     }
+    return false;
 }
 
 // Callback invoked by CAN drivers from their RX tasks
@@ -181,9 +220,13 @@ static void on_frame_received(const can_tagged_frame_t *frame, void *user_ctx)
     s_core += dbc_observe_frame(frame);
     automation_manager_on_frame(frame);
     vehicle_control_on_frame(frame);
-    c3x_tap(frame);
+    bool tapped = c3x_tap(frame);
     uint8_t route = can_route_classify(frame->bus_id, frame->frame.id, frame->frame.extended);
     if (!route) return;
+    if ((route & CAN_ROUTE_BULK) && frame->bus_id < 2 && s_c3x_up) {  // whole bus: to the C3X instead of BLE
+        if (!tapped) c3x_queue(frame);
+        return;
+    }
 
     // Drop frame if queue is full rather than blocking the driver
     if (enqueue(frame, route)) {
@@ -201,8 +244,8 @@ esp_err_t can_manager_init(void)
     if (!s_rx_queue || !s_bulk_queue || !s_rx_count) {
         return ESP_ERR_NO_MEM;
     }
-    usb_serial_jtag_driver_config_t usj = { .tx_buffer_size = 1024, .rx_buffer_size = 4096 };
-    s_c3x_q = xQueueCreate(16, sizeof(can_frame_t));
+    usb_serial_jtag_driver_config_t usj = { .tx_buffer_size = 8192, .rx_buffer_size = 4096 };
+    s_c3x_q = xQueueCreate(512, sizeof(c3x_frame_t));
     if (!s_c3x_q || usb_serial_jtag_driver_install(&usj) != ESP_OK || xTaskCreate(lanes_task, "lanes", 3072, NULL, 1, NULL) != pdPASS) {
         return ESP_ERR_NO_MEM;
     }

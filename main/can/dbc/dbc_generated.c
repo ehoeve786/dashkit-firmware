@@ -321,6 +321,35 @@ const dbc_signal_t g_dbc_signals[DBC_SIGNAL_COUNT] = {
     { "DAS_accelMax", 44, 9, 0, 0.04, -15.0, -1, -1 },
     { "DAS_controlCounter", 53, 3, 0, 1.0, 0.0, -1, -1 },
     { "DAS_controlChecksum", 56, 8, 0, 1.0, 0.0, -1, -1 },
+    // ---- VCLEFT_lightStatus (0x3E2) ----
+    { "VCLEFT_brakeLightStatus", 0, 2, 0, 1.0, 0.0, -1, -1 },
+    { "VCLEFT_tailLightStatus", 2, 2, 0, 1.0, 0.0, -1, -1 },
+    { "VCLEFT_turnSignalStatus", 4, 2, 0, 1.0, 0.0, -1, -1 },
+    { "VCLEFT_FLMapLightStatus", 6, 2, 0, 1.0, 0.0, -1, -1 },
+    { "VCLEFT_FRMapLightStatus", 8, 2, 0, 1.0, 0.0, -1, -1 },
+    { "VCLEFT_RLMapLightStatus", 10, 2, 0, 1.0, 0.0, -1, -1 },
+    { "VCLEFT_RRMapLightStatus", 12, 2, 0, 1.0, 0.0, -1, -1 },
+    { "VCLEFT_FLMapLightSwitchPressed", 14, 1, 0, 1.0, 0.0, -1, -1 },
+    { "VCLEFT_FRMapLightSwitchPressed", 15, 1, 0, 1.0, 0.0, -1, -1 },
+    { "VCLEFT_RLMapLightSwitchPressed", 16, 1, 0, 1.0, 0.0, -1, -1 },
+    { "VCLEFT_RRMapLightSwitchPressed", 17, 1, 0, 1.0, 0.0, -1, -1 },
+    { "VCLEFT_leftTurnTrailerLightStatus", 18, 2, 0, 1.0, 0.0, -1, -1 },
+    { "VCLEFT_rightTrnTrailerLightStatus", 20, 2, 0, 1.0, 0.0, -1, -1 },
+    { "VCLEFT_brakeTrailerLightStatus", 22, 2, 0, 1.0, 0.0, -1, -1 },
+    { "VCLEFT_tailTrailerLightStatus", 24, 2, 0, 1.0, 0.0, -1, -1 },
+    { "VCLEFT_fogTrailerLightStatus", 26, 2, 0, 1.0, 0.0, -1, -1 },
+    { "VCLEFT_frontRideHeight", 28, 8, 1, 1.0, 0.0, -1, -1 },
+    { "VCLEFT_rearRideHeight", 36, 8, 1, 1.0, 0.0, -1, -1 },
+    { "VCLEFT_dynamicBrakeLightStatus", 44, 2, 0, 1.0, 0.0, -1, -1 },
+    { "VCLEFT_trailerDetected", 46, 2, 0, 1.0, 0.0, -1, -1 },
+    { "VCLEFT_rideHeightSensorFault", 48, 1, 0, 1.0, 0.0, -1, -1 },
+    { "VCLEFT_reverseTrailerLightStatus", 49, 2, 0, 1.0, 0.0, -1, -1 },
+    // ---- VCRIGHT_lightStatus (0x3E3) ----
+    { "VCRIGHT_brakeLightStatus", 0, 2, 0, 1.0, 0.0, -1, -1 },
+    { "VCRIGHT_tailLightStatus", 2, 2, 0, 1.0, 0.0, -1, -1 },
+    { "VCRIGHT_turnSignalStatus", 4, 2, 0, 1.0, 0.0, -1, -1 },
+    { "VCRIGHT_reverseLightStatus", 6, 2, 0, 1.0, 0.0, -1, -1 },
+    { "VCRIGHT_rearFogLightStatus", 8, 2, 0, 1.0, 0.0, -1, -1 },
 };
 
 const dbc_message_t g_dbc_messages[DBC_MESSAGE_COUNT] = {
@@ -342,6 +371,8 @@ const dbc_message_t g_dbc_messages[DBC_MESSAGE_COUNT] = {
     { "DI_speed", 0x257, 8, 0, 261, 5, DBC_CKSUM_TESLA_BYTESUM, 261, 262 },
     { "DAS_status", 0x399, 8, 0, 266, 26, DBC_CKSUM_TESLA_BYTESUM, 291, 290 },
     { "DAS_control", 0x2B9, 8, 0, 292, 9, DBC_CKSUM_TESLA_BYTESUM, 300, 299 },
+    { "VCLEFT_lightStatus", 0x3E2, 7, 1, 301, 22, DBC_CKSUM_NONE, -1, -1 },
+    { "VCRIGHT_lightStatus", 0x3E3, 2, 1, 323, 5, DBC_CKSUM_NONE, -1, -1 },
 };
 
 static const uint16_t hw_filter_bus0_ids[] = {

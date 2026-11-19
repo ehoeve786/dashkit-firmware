@@ -105,8 +105,9 @@ static void route_report_cb(void *arg)
 //  out: "A,<bus>,<id>,<hex>" (id: 3 hex digits, 8 if extended), batched:
 //       - always: the chassis-bus (0) frames the C3X can't see: DAS_lanes 0x239, DAS_carLog 0x5D9,
 //         DAS_autopilotDebug 0x247, UI_gpsVehicleSpeed 0x2F8, APP_frontParkAssistData 0x34B (~35 frames/s);
-//       - while the app takes a whole bus ("Log every frame") and the C3X is up: that bus's frames (0 and 1, all of
-//         them), here instead of over BLE (which keeps the ids the app asked for by id). The C3X records them.
+//       - while the app takes a whole bus ("Log every frame") and the C3X is up: every frame of that bus (0 and 1),
+//         the rest of it here instead of over BLE (which still gets the ids the app asked for by id). The C3X
+//         records them.
 //       Once a second while the C3X is up: "S,<queue drops>,<write drops>" (totals since boot).
 //       The CAN RX path only queues (never blocks; dropped if the queue is full).
 //  in:  "C,<bus>,<id>,<hex>" frames for the app only (never sent on CAN): bus 1 id 0x7F0 = openpilot state
@@ -223,9 +224,10 @@ static void on_frame_received(const can_tagged_frame_t *frame, void *user_ctx)
     bool tapped = c3x_tap(frame);
     uint8_t route = can_route_classify(frame->bus_id, frame->frame.id, frame->frame.extended);
     if (!route) return;
-    if ((route & CAN_ROUTE_BULK) && frame->bus_id < 2 && s_c3x_up) {  // whole bus: to the C3X instead of BLE
+    // Whole bus with the C3X up: every frame of it goes to the C3X; BLE keeps only the ids the app asked for.
+    if (frame->bus_id < 2 && s_c3x_up && can_route_all(frame->bus_id)) {
         if (!tapped) c3x_queue(frame);
-        return;
+        if (route & CAN_ROUTE_BULK) return;
     }
 
     // Drop frame if queue is full rather than blocking the driver

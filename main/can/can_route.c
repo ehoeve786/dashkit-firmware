@@ -47,6 +47,11 @@ void can_route_forward_commit(void)
     s_fwd_idx ^= 1;
 }
 
+bool can_route_all(uint8_t bus)
+{
+    return bus < CAN_ROUTE_BUSES && s_fwd[s_fwd_idx].all[bus];
+}
+
 uint8_t can_route_classify(uint8_t bus, uint32_t id, bool extended)
 {
     if (bus >= CAN_ROUTE_BUSES) return 0;

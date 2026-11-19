@@ -33,3 +33,6 @@ void can_route_forward_commit(void);
 
 // CAN_ROUTE_FORWARD (| CAN_ROUTE_BULK) if the app gets this frame; 0 = it stays in the firmware.
 uint8_t can_route_classify(uint8_t bus, uint32_t id, bool extended);
+
+// True if the app has a whole-bus entry for `bus`.
+bool can_route_all(uint8_t bus);

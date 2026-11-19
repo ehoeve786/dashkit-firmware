@@ -13,7 +13,9 @@
 # ---- Vehicle bus (1) ----
 SCCM_leftStalk             1  # wiper-off: wiper button + counter/checksum
 VCLEFT_switchStatus        1  # wiper-off: scroll-wheel tick
-DAS_bodyControls           1  # wiper-off: DAS_wiperSpeed trigger
+DAS_bodyControls           1  # wiper-off: DAS_wiperSpeed trigger; signal off in Park: turn signal cancel
+VCLEFT_lightStatus         1  # signal off in Park: left turn signal lamp
+VCRIGHT_lightStatus        1  # signal off in Park: right turn signal lamp
 UI_status2                 1  # multi-finger: UI_activeTouchPoints
 UI_vehicleControl          1  # commands: closures, mirror fold, mirror dip
 UI_vehicleControl2         1  # commands: glovebox (RMW)

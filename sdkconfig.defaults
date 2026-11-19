@@ -69,3 +69,6 @@ CONFIG_BT_NIMBLE_LOG_LEVEL_WARNING=y
 CONFIG_ESPTOOLPY_FLASHSIZE_16MB=y
 
 # CONFIG_DASHKIT_DEBUG_LOG=y
+
+# USB-Serial-JTAG is a data link to the comma 3X (driver in can_manager.c), not a log console
+CONFIG_ESP_CONSOLE_SECONDARY_NONE=y

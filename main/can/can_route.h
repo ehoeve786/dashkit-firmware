@@ -12,7 +12,7 @@
 #include <stddef.h>
 #include <stdint.h>
 
-#define CAN_ROUTE_BUSES      2
+#define CAN_ROUTE_BUSES      4   // 0 chassis, 1 vehicle; 2 and 3: the comma 3X's party bus and Autopilot side (USB)
 #define CAN_ROUTE_FORWARD    0x02
 // With FORWARD: the app gets this frame only through a whole-bus entry ("Log every frame"), not by its id. Such
 // frames wait behind the ones the app asked for by id, so a capture or a slow link never delays the dashboard.

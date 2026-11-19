@@ -71,7 +71,7 @@ int main(void)
 {
     dbc_init();
 
-    // Every little-endian message in the DBC is generated, sorted by id, and found by name.
+    // Only the messages the firmware names are generated (gen_dbc.py scans main/), sorted by id and found by name.
     {
         int sorted = 1, found = 1;
         for (int i = 0; i < DBC_MESSAGE_COUNT; i++) {
@@ -80,9 +80,9 @@ int main(void)
             if (dbc_msg(g_dbc_messages[i].name) != i) found = 0;
             if (g_dbc_messages[i].id > 0x7FF || g_dbc_messages[i].dlc > 8) sorted = 0;
         }
-        CHECK(DBC_MESSAGE_COUNT > 300 && sorted && found, "%d messages, sorted=%d, found by name=%d",
+        CHECK(DBC_MESSAGE_COUNT > 0 && DBC_MESSAGE_COUNT < 64 && sorted && found, "%d messages, sorted=%d, found by name=%d",
               DBC_MESSAGE_COUNT, sorted, found);
-        CHECK(dbc_msg("UI_ambientLightingCtrls") != DBC_MSG_INVALID, "a message no firmware code uses is there");
+        CHECK(dbc_msg("UI_ambientLightingCtrls") == DBC_MSG_INVALID, "a message no firmware code names is left out");
         CHECK(dbc_msg("") == DBC_MSG_INVALID && dbc_msg("ZZZ") == DBC_MSG_INVALID && dbc_msg("AAA") == DBC_MSG_INVALID,
               "unknown names are not found");
     }

@@ -6,17 +6,21 @@ structs and float encode/decode, which is the opposite of the string/handle tabl
 API the firmware engine wants (and it can't do Tesla checksum/counter), so we
 hand-roll the emitter here.
 
-Every message in the DBC is emitted with all of its signals, so firmware code
-can read or send any of them by name with no list to maintain. Messages are
-sorted by id (the RX path finds a frame's message by binary search) and
-g_dbc_by_name indexes them by name.
+Only the messages the firmware names are emitted, each with all of its signals:
+every quoted string in main/ (outside the generated files) that equals a message
+name in the DBC. Using a new message is just writing its name in the code, e.g.
+can_get(1, "DAS_bodyControls", ...); there is no list to maintain, and the
+image stays small however large the DBC is. Messages are sorted by id (the RX
+path finds a frame's message by binary search) and g_dbc_by_name indexes them
+by name.
 
 Layout assumptions:
   * Every emitted signal is little-endian (Intel). For little-endian, cantools'
     `signal.start` IS the LSB DBC start bit, so we emit it verbatim. Messages
     with a big-endian signal are left out (the engine cannot decode them), as
     are extended-id and longer-than-8-byte messages (the value cache and the
-    drivers' priority filters hold classic standard frames).
+    drivers' priority filters hold classic standard frames): naming one in the
+    firmware is an error.
   * Checksum signal (strict): name == <Msg>Checksum, 8 bits, little-endian.
     *CRC/*Crc and the 1-bit ESP_a* checks are intentionally NOT matched.
   * Counter signal: name == <Msg>Counter (any width; DI_*Counter is 3-bit).
@@ -24,6 +28,7 @@ Layout assumptions:
 
 import argparse
 import os
+import re
 import sys
 
 try:
@@ -53,20 +58,36 @@ def c_float(x):
     return repr(float(x))
 
 
-def generate(dbc_path, out_c, out_h):
+def used_names(src_dir, out_c, out_h):
+    """Every quoted string in the firmware sources under src_dir."""
+    skip = {os.path.abspath(out_c), os.path.abspath(out_h)}
+    names = set()
+    for root, _, files in os.walk(src_dir):
+        for f in files:
+            path = os.path.abspath(os.path.join(root, f))
+            if f.endswith((".c", ".h")) and path not in skip:
+                with open(path, encoding="utf-8", errors="ignore") as fh:
+                    names.update(re.findall(r'"([A-Za-z][A-Za-z0-9_]*)"', fh.read()))
+    return names
+
+
+def generate(dbc_path, src_dir, out_c, out_h):
     # strict=False: the full Tesla DBC has a few self-inconsistent messages
     # (e.g. UTC_unixTime); don't let them block the load.
     db = cantools.database.load_file(dbc_path, strict=False)
+    names = used_names(src_dir, out_c, out_h)
 
     def usable(m):
         return (not m.is_extended_frame and m.length <= 8
                 and all(signal_byte_order(sig) == "little_endian" for sig in m.signals))
 
-    messages = sorted((m for m in db.messages if usable(m)), key=lambda m: m.frame_id)
-    skipped = sorted(m.name for m in db.messages if not usable(m))
-    if skipped:
-        sys.stderr.write("gen_dbc: left out (big-endian, extended or > 8 bytes): %s\n"
-                         % ", ".join(skipped))
+    used = [m for m in db.messages if m.name in names]
+    bad = sorted(m.name for m in used if not usable(m))
+    if bad:
+        sys.stderr.write("error: the firmware names messages the engine cannot handle "
+                         "(big-endian, extended or > 8 bytes): %s\n" % ", ".join(bad))
+        sys.exit(1)
+    messages = sorted(used, key=lambda m: m.frame_id)
 
     # First pass: flatten signals (sorted by start bit) and assign global indices.
     flat_signals = []          # list of (msg, sig)
@@ -225,10 +246,11 @@ def generate(dbc_path, out_c, out_h):
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--dbc", required=True)
+    ap.add_argument("--sources", required=True, help="firmware source dir to scan for message names")
     ap.add_argument("--out-c", required=True)
     ap.add_argument("--out-h", required=True)
     args = ap.parse_args()
-    generate(args.dbc, args.out_c, args.out_h)
+    generate(args.dbc, args.sources, args.out_c, args.out_h)
 
 
 if __name__ == "__main__":

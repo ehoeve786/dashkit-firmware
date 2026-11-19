@@ -135,7 +135,7 @@ Run `idf.py fullclean && idf.py build` after changing options.
 
 Both CAN controllers receive their bus in full, so no list of messages has to be maintained anywhere:
 
-- **Firmware:** every little-endian message in the DBC is generated into `dbc_generated.{c,h}`, and the latest frame of each is cached per bus. An automation reads or sends any of them by name (`can_get`, `can_send`, …) with nothing to register.
+- **Firmware:** an automation or command reads or sends any DBC message by name (`can_get`, `can_send`, …) with nothing to register. The generator builds tables for exactly the messages the firmware names (quoted strings under `main/`), and the latest frame of each is cached per bus.
 - **App:** only the ids the app lists in the CAN filter characteristic are forwarded over BLE (any standard id on either bus, no limit from the controllers' 32 hardware filters). Nothing is forwarded until the app writes its list, and nothing after it disconnects. Adding a message to the app's car state needs no firmware change.
 - **Priority lane:** messages firmware code has read, then the ids the app asked for, get exact filters (28 per bus) into a dedicated FIFO that is always drained first, so the rest of the bus can never crowd them out. The set is built at run time from what is actually read; everything else arrives through four bulk FIFOs, read in chunks of 8.
 - When the app lists `0xFFFFFFFF` for a bus (DashPilot's developer option **Log every frame**), every frame on it is forwarded too. Frames the app asked for by id still go first over BLE.
@@ -162,7 +162,7 @@ Control opcode `0x51` (value 1/0) makes the firmware add diagnostic records to t
 | `dbc/` | Vehicle DBC |
 | `tools/` | DBC/proto codegen, host tests, OTA publishing |
 
-The DBC tables (`main/can/dbc/dbc_generated.{c,h}`) are generated from `dbc/used_messages.txt` and committed. If `tools/.venv` exists, `idf.py build` regenerates them automatically:
+The DBC tables (`main/can/dbc/dbc_generated.{c,h}`) hold the messages the firmware source names, and are committed. If `tools/.venv` exists, `idf.py build` regenerates them whenever a source file changes; commit the result with the code that uses a new message:
 
 ```bash
 python3 -m venv tools/.venv && tools/.venv/bin/pip install -r tools/requirements.txt

@@ -5,10 +5,10 @@
 // (dbc_generated.{c,h}, produced from dbc/bus_1_tesla_vehicle.dbc). This
 // replaces the hand-rolled per-feature pack()/checksum()/hardcoded-id code.
 //
-// Any DBC message can be used on either bus with nothing to register: the CAN
-// controllers receive both buses in full, and tools/gen_dbc.py generates every
-// message whose name appears as a quoted string in the firmware source. All
-// generated signals are little-endian (Intel).
+// The CAN controllers receive both buses in full, so any message listed in
+// dbc/used_messages.txt can be read or sent on either bus by name
+// (tools/gen_dbc.py generates the tables). All generated signals are
+// little-endian (Intel).
 
 #include "can_interface.h"
 #include "dbc_generated.h"

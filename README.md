@@ -135,7 +135,7 @@ Run `idf.py fullclean && idf.py build` after changing options.
 
 Both CAN controllers receive their bus in full, so no list of messages has to be maintained anywhere:
 
-- **Firmware:** an automation or command reads or sends any DBC message by name (`can_get`, `can_send`, …) with nothing to register. The generator builds tables for exactly the messages the firmware names (quoted strings under `main/`), and the latest frame of each is cached per bus.
+- **Firmware:** the messages its commands and automations use are listed in `dbc/used_messages.txt`, one place to see them all. Each is read or sent by name (`can_get`, `can_send`, …) on either bus, and its latest frame is cached per bus. Code naming a message that isn't listed fails the build.
 - **App:** only the ids the app lists in the CAN filter characteristic are forwarded over BLE (any standard id on either bus, no limit from the controllers' 32 hardware filters). Nothing is forwarded until the app writes its list, and nothing after it disconnects. Adding a message to the app's car state needs no firmware change.
 - **Priority lane:** messages firmware code has read, then the ids the app asked for, get exact filters (28 per bus) into a dedicated FIFO that is always drained first, so the rest of the bus can never crowd them out. The set is built at run time from what is actually read; everything else arrives through four bulk FIFOs, read in chunks of 8.
 - When the app lists `0xFFFFFFFF` for a bus (DashPilot's developer option **Log every frame**), every frame on it is forwarded too. Frames the app asked for by id still go first over BLE.
@@ -159,10 +159,10 @@ Control opcode `0x51` (value 1/0) makes the firmware add diagnostic records to t
 | `main/tesla/` | Tesla BLE key enrollment and vehicle-command client |
 | `main/bthome/` | BTHome button listener |
 | `components/tesla-protocol/` | Tesla vehicle-command crypto, session, protobufs |
-| `dbc/` | Vehicle DBC |
+| `dbc/` | Vehicle DBC and `used_messages.txt`, the messages the firmware uses |
 | `tools/` | DBC/proto codegen, host tests, OTA publishing |
 
-The DBC tables (`main/can/dbc/dbc_generated.{c,h}`) hold the messages the firmware source names, and are committed. If `tools/.venv` exists, `idf.py build` regenerates them whenever a source file changes; commit the result with the code that uses a new message:
+The DBC tables (`main/can/dbc/dbc_generated.{c,h}`) are generated from `dbc/used_messages.txt` and committed. If `tools/.venv` exists, `idf.py build` regenerates them and checks the firmware code against the list; commit the result with the code that uses a new message:
 
 ```bash
 python3 -m venv tools/.venv && tools/.venv/bin/pip install -r tools/requirements.txt

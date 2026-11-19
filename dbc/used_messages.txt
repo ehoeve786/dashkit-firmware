@@ -1,0 +1,32 @@
+# The CAN messages the firmware itself uses (commands and automations), one
+# line each:  NAME  BUS  # what for
+#   BUS = 0 (chassis / party) or 1 (vehicle): the bus the firmware reads or
+#         sends it on.
+# tools/gen_dbc.py generates decode tables for exactly these messages (from
+# dbc/bus_1_tesla_vehicle.dbc) into main/can/dbc/dbc_generated.{c,h}. The build
+# fails if firmware code names a message that isn't listed here.
+#
+# Nothing here limits what the CAN chips receive (both buses, in full) or what
+# an app gets: DashPilot asks the DashKit for the ids its car state reads, any
+# number on either bus, and only those are forwarded over BLE.
+
+# ---- Vehicle bus (1) ----
+SCCM_leftStalk             1  # wiper-off: wiper button + counter/checksum
+VCLEFT_switchStatus        1  # wiper-off: scroll-wheel tick
+DAS_bodyControls           1  # wiper-off: DAS_wiperSpeed trigger
+UI_status2                 1  # multi-finger: UI_activeTouchPoints
+UI_vehicleControl          1  # commands: closures, mirror fold, mirror dip
+UI_vehicleControl2         1  # commands: glovebox (RMW)
+UI_chargeRequest           1  # commands: charge port open/close (RMW)
+UI_tripPlanning            1  # battery preheat: Supercharger nav request (raw RMW)
+UI_hvacRequest             1  # rear AC fan, climate keep
+UI_powertrainControl       1  # sport kick-down: UI_pedalMap (RMW)
+UI_ventPanelControlRequest 1  # AC swing: vent position (RMW)
+VCSEC_requests             1  # door unlatch: closure request (RMW)
+EPBL_internalStatus        1  # door unlatch: parked check while the drive inverter sleeps
+EPBR_internalStatus        1  # door unlatch: parked check while the drive inverter sleeps
+
+# ---- Chassis bus (0) ----
+DI_systemStatus            0  # door unlatch / mirror dip: gear
+DI_speed                   0  # door unlatch: speed gate
+DAS_status2                0  # wiper-off gate: DAS_lssState

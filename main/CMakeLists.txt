@@ -68,9 +68,9 @@ idf_component_register(
 )
 
 # DBC codegen: regenerate the committed dbc_generated.{c,h} from the vendored
-# .dbc when a python venv with cantools is available. Only the messages the
-# firmware names (quoted strings in main/) are generated, so every source file is
-# an input. The generated
+# .dbc when a python venv with cantools is available. The messages in
+# dbc/used_messages.txt are generated; every source file is an input because the
+# build checks that each message the code names is listed there. The generated
 # files are committed, so a clean (python-less) checkout still builds without
 # this step. OUTPUT paths match the committed paths so an in-tree rebuild simply
 # refreshes them in place.
@@ -87,10 +87,12 @@ if(DBC_PY)
         OUTPUT  "${DBC_GEN_C}" "${DBC_GEN_H}"
         COMMAND "${DBC_PY}" "${DBC_TOOLS_DIR}/gen_dbc.py"
                 --dbc       "${DBC_DIR}/bus_1_tesla_vehicle.dbc"
+                --messages  "${DBC_DIR}/used_messages.txt"
                 --sources   "${CMAKE_CURRENT_SOURCE_DIR}"
                 --out-c     "${DBC_GEN_C}"
                 --out-h     "${DBC_GEN_H}"
         DEPENDS "${DBC_DIR}/bus_1_tesla_vehicle.dbc"
+                "${DBC_DIR}/used_messages.txt"
                 "${DBC_TOOLS_DIR}/gen_dbc.py"
                 ${DBC_SCAN_SRCS}
         COMMENT "Regenerating DBC tables (dbc_generated.{c,h})"

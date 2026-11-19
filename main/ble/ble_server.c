@@ -92,6 +92,9 @@ typedef struct {
 static conn_slot_t s_conns[MAX_CONNS];
 static uint32_t    s_sub_seq_counter = 0;
 static volatile uint16_t s_active_handle = BLE_HS_CONN_HANDLE_NONE;
+// The other encrypted, subscribed phones: they get the CAN stream too (best effort), but can't drive the vehicle.
+static uint16_t         s_others[MAX_CONNS];
+static volatile uint8_t s_n_others;
 static volatile bool s_compact;  // the app asked for compact CAN packets
 static volatile uint32_t s_pings;  // keepalive pings received since boot
 static volatile uint16_t s_tx_octets = 27;  // link-layer packet size of the latest connection (27 until extended)
@@ -220,6 +223,14 @@ static void update_active(void)
             best = s;
         }
     }
+    uint8_t n = 0;
+    for (int i = 0; i < MAX_CONNS; i++) {
+        conn_slot_t *s = &s_conns[i];
+        if (s != best && s->handle != BLE_HS_CONN_HANDLE_NONE && s->encrypted && s->subscribed) {
+            s_others[n++] = s->handle;
+        }
+    }
+    s_n_others = n;
     uint16_t new_active = best ? best->handle : BLE_HS_CONN_HANDLE_NONE;
     if (new_active != s_active_handle) {
         ESP_LOGI(TAG, "Active connection: %d -> %d", s_active_handle, new_active);
@@ -901,18 +912,8 @@ esp_err_t ble_server_start(void)
     return ESP_OK;
 }
 
-esp_err_t ble_server_notify(const uint8_t *data, size_t len)
+static esp_err_t notify_one(uint16_t conn, const uint8_t *data, size_t len)
 {
-    // Pause CAN notifications during OTA to avoid BLE congestion
-    if (ble_ota_is_in_progress()) {
-        return ESP_ERR_INVALID_STATE;
-    }
-
-    uint16_t conn = s_active_handle;  // snapshot: host task may change it
-    if (conn == BLE_HS_CONN_HANDLE_NONE) {
-        return ESP_ERR_INVALID_STATE;
-    }
-
     // NimBLE has two buffer pools and takes every small allocation (an ATT response, a notification's header)
     // from the first: 12 blocks. ble_hs_mbuf_from_flat() put the CAN payload there too, so a busy stream kept it
     // empty and a write from the app got no response at all: commands were lost and Android dropped the link 30 s
@@ -941,9 +942,35 @@ esp_err_t ble_server_notify(const uint8_t *data, size_t len)
     return ESP_OK;
 }
 
+
+esp_err_t ble_server_notify(const uint8_t *data, size_t len)
+{
+    // Pause CAN notifications during OTA to avoid BLE congestion
+    if (ble_ota_is_in_progress()) {
+        return ESP_ERR_INVALID_STATE;
+    }
+
+    uint16_t conn = s_active_handle;  // snapshot: host task may change it
+    if (conn == BLE_HS_CONN_HANDLE_NONE) {
+        return ESP_ERR_INVALID_STATE;
+    }
+    esp_err_t err = notify_one(conn, data, len);
+    // The other phones get each packet once, after the active one took it (the caller retries ESP_ERR_NO_MEM);
+    // one that can't keep up just misses packets.
+    for (uint8_t i = 0, n = err == ESP_OK ? s_n_others : 0; i < n; i++) {
+        notify_one(s_others[i], data, len);
+    }
+    return err;
+}
+
+// The smallest of the phones that get the stream, so every one of them can take each packet.
 size_t ble_server_max_payload(void)
 {
     uint16_t mtu = ble_att_mtu(s_active_handle);  // 0 if not connected
+    for (uint8_t i = 0, n = mtu ? s_n_others : 0; i < n; i++) {
+        uint16_t m = ble_att_mtu(s_others[i]);
+        if (m && m < mtu) mtu = m;
+    }
     return mtu > 3 ? mtu - 3 : 0;
 }
 
@@ -963,7 +990,8 @@ void ble_server_link_diag(uint8_t d[8])
 
 uint32_t ble_server_pings(void) { return s_pings; }
 void ble_server_set_compact(bool on) { s_compact = on; }
-bool ble_server_compact(void) { return s_compact; }
+// Compact packets only while one phone gets the stream: another app may not read them.
+bool ble_server_compact(void) { return s_compact && !s_n_others; }
 
 bool ble_server_is_connected(void)
 {

@@ -359,3 +359,40 @@ const uint16_t g_dbc_by_name[DBC_MESSAGE_COUNT] = {
     18, 12, 5, 0, 7, 2, 3, 9, 8, 10, 15, 11, 6, 13, 4, 16,
     14, 17, 1,
 };
+
+const uint16_t g_dbc_default_ids[DBC_DEFAULT_ID_COUNT] = {
+    0x249 | 1 << 11,  // SCCM_leftStalk
+    0x3C2 | 1 << 11,  // VCLEFT_switchStatus
+    0x3E9 | 1 << 11,  // DAS_bodyControls
+    0x3E2 | 1 << 11,  // VCLEFT_lightStatus
+    0x3E3 | 1 << 11,  // VCRIGHT_lightStatus
+    0x3DF | 1 << 11,  // UI_status2
+    0x273 | 1 << 11,  // UI_vehicleControl
+    0x3B3 | 1 << 11,  // UI_vehicleControl2
+    0x333 | 1 << 11,  // UI_chargeRequest
+    0x347 | 1 << 11,  // UI_tripPlanning
+    0x2F3 | 1 << 11,  // UI_hvacRequest
+    0x334 | 1 << 11,  // UI_powertrainControl
+    0x253 | 1 << 11,  // UI_ventPanelControlRequest
+    0x1F9 | 1 << 11,  // VCSEC_requests
+    0x288 | 1 << 11,  // EPBL_internalStatus
+    0x228 | 1 << 11,  // EPBR_internalStatus
+    0x118 | 0 << 11,  // DI_systemStatus
+    0x257 | 0 << 11,  // DI_speed
+    0x389 | 0 << 11,  // DAS_status2
+    0x129 | 0 << 11,  // SCCM_steeringAngleSensor
+    0x399 | 0 << 11,  // DAS_status
+    0x25D | 0 << 11,  // DAS_road
+    0x2E1 | 1 << 11,  // VCFRONT_status
+    0x352 | 1 << 11,  // BMS_energyStatus
+    0x252 | 1 << 11,  // BMS_powerAvailable
+    0x132 | 1 << 11,  // BMS_hvBusStatus
+    0x332 | 1 << 11,  // BMS_bmbMinMax
+    0x3B6 | 1 << 11,  // DI_odometerStatus
+    0x405 | 1 << 11,  // VIN_info
+    0x219 | 1 << 11,  // VCSEC_TPMSData
+    0x102 | 1 << 11,  // VCLEFT_doorStatus
+    0x103 | 1 << 11,  // VCRIGHT_doorStatus
+    0x142 | 1 << 11,  // VCLEFT_liftgateStatus
+    0x679 | 1 << 11,  // UI_ambientLightingCtrls
+};

@@ -4,7 +4,7 @@
 //
 // The CAN controllers receive both buses in full and the firmware reads whatever it needs from the DBC value
 // cache. What goes on to the connected app is decided here, one bit lookup per frame: only the ids the app wrote
-// to the CAN filter characteristic, any number of them on either bus, and nothing until it has written a list.
+// to the CAN filter characteristic, any number of them on either bus (can_filter fills in a default list for an app that writes none).
 //
 // Plain C with no RTOS dependencies; unit-tested on the host.
 

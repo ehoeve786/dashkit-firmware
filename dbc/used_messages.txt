@@ -8,7 +8,9 @@
 #
 # Nothing here limits what the CAN chips receive (both buses, in full) or what
 # an app gets: DashPilot asks the DashKit for the ids its car state reads, any
-# number on either bus, and only those are forwarded over BLE.
+# number on either bus, and only those are forwarded over BLE. An app that
+# doesn't ask (DashPilot before it did) gets every message listed here, the
+# firmware's and the "app" ones below (not decoded by the firmware).
 
 # ---- Vehicle bus (1) ----
 SCCM_leftStalk             1  # wiper-off: wiper button + counter/checksum
@@ -32,3 +34,20 @@ EPBR_internalStatus        1  # door unlatch: parked check while the drive inver
 DI_systemStatus            0  # door unlatch / mirror dip: gear
 DI_speed                   0  # door unlatch: speed gate
 DAS_status2                0  # wiper-off gate: DAS_lssState
+
+# ---- App only: forwarded to an app that sends no CAN filter of its own ----
+SCCM_steeringAngleSensor   0 app  # steering angle
+DAS_status                 0 app  # blind spot / speed limit / lane + collision warnings
+DAS_road                   0 app  # traffic light colour / stop line distance
+VCFRONT_status             1 app  # any door open
+BMS_energyStatus           1 app  # pack energy
+BMS_powerAvailable         1 app  # regen / discharge power
+BMS_hvBusStatus            1 app  # pack voltage / current
+BMS_bmbMinMax              1 app  # pack temps
+DI_odometerStatus          1 app  # odometer
+VIN_info                   1 app  # VIN
+VCSEC_TPMSData             1 app  # tyre pressure + temperature
+VCLEFT_doorStatus          1 app  # left door latches
+VCRIGHT_doorStatus         1 app  # right door + trunk latches
+VCLEFT_liftgateStatus      1 app  # powered trunk
+UI_ambientLightingCtrls    1 app  # interior strip lighting

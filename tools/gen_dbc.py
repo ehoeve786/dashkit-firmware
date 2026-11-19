@@ -71,29 +71,30 @@ def used_names(src_dir, out_c, out_h):
 
 
 def load_list(path):
-    """Message names from used_messages.txt: 'NAME BUS' per line, # comments."""
-    names = []
+    """(name, bus, app_only) per line of used_messages.txt: 'NAME BUS [app]', # comments."""
+    rows = []
     with open(path) as f:
         for lineno, raw in enumerate(f, 1):
             parts = raw.split("#", 1)[0].split()
             if not parts:
                 continue
-            if len(parts) != 2 or parts[1] not in ("0", "1"):
-                sys.stderr.write("error: %s:%d: expected 'NAME BUS' (BUS 0 or 1), got %r\n"
+            if len(parts) not in (2, 3) or parts[1] not in ("0", "1") or parts[2:] not in ([], ["app"]):
+                sys.stderr.write("error: %s:%d: expected 'NAME BUS [app]' (BUS 0 or 1), got %r\n"
                                  % (path, lineno, raw.strip()))
                 sys.exit(1)
-            names.append(parts[0])
-    return names
+            rows.append((parts[0], int(parts[1]), len(parts) == 3))
+    return rows
 
 
 def generate(dbc_path, list_path, src_dir, out_c, out_h):
     # strict=False: the full Tesla DBC has a few self-inconsistent messages
     # (e.g. UTC_unixTime); don't let them block the load.
     db = cantools.database.load_file(dbc_path, strict=False)
-    listed = load_list(list_path)
+    rows = load_list(list_path)
+    listed = [n for n, _, app in rows if not app]
     known = {m.name for m in db.messages}
     missing = sorted((used_names(src_dir, out_c, out_h) & known) - set(listed))
-    unknown = sorted(set(listed) - known)
+    unknown = sorted({n for n, _, _ in rows} - known)
     if missing or unknown:
         if missing:
             sys.stderr.write("error: firmware code uses messages missing from %s: %s\n"
@@ -223,6 +224,11 @@ def generate(dbc_path, list_path, src_dir, out_c, out_h):
     h.append("// (strcmp) order.")
     h.append("extern const uint16_t g_dbc_by_name[DBC_MESSAGE_COUNT];")
     h.append("")
+    h.append("// Every listed message, as id | bus << 11: what the DashKit forwards to an app")
+    h.append("// that hasn't sent its own CAN filter.")
+    h.append("#define DBC_DEFAULT_ID_COUNT %d" % len(rows))
+    h.append("extern const uint16_t g_dbc_default_ids[DBC_DEFAULT_ID_COUNT];")
+    h.append("")
 
     # --- Emit source ---
     c = []
@@ -257,6 +263,13 @@ def generate(dbc_path, list_path, src_dir, out_c, out_h):
     c.append("const uint16_t g_dbc_by_name[DBC_MESSAGE_COUNT] = {")
     for i in range(0, len(by_name), 16):
         c.append("    " + ", ".join("%d" % v for v in by_name[i:i + 16]) + ",")
+    c.append("};")
+    c.append("")
+
+    by_db = {m.name: m for m in db.messages}
+    c.append("const uint16_t g_dbc_default_ids[DBC_DEFAULT_ID_COUNT] = {")
+    for n, bus, _ in rows:
+        c.append("    0x%03X | %d << 11,  // %s" % (by_db[n].frame_id & 0x7FF, bus, n))
     c.append("};")
     c.append("")
 

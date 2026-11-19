@@ -41,3 +41,8 @@ extern const dbc_signal_t  g_dbc_signals[DBC_SIGNAL_COUNT];
 // g_dbc_messages is sorted by id; g_dbc_by_name lists its indices in name
 // (strcmp) order.
 extern const uint16_t g_dbc_by_name[DBC_MESSAGE_COUNT];
+
+// Every listed message, as id | bus << 11: what the DashKit forwards to an app
+// that hasn't sent its own CAN filter.
+#define DBC_DEFAULT_ID_COUNT 34
+extern const uint16_t g_dbc_default_ids[DBC_DEFAULT_ID_COUNT];

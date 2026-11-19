@@ -7,6 +7,7 @@
 #include "sdkconfig.h"
 
 #include "can_route.h"
+#include "dbc/dbc_generated.h"
 
 static const char *TAG = "can_filter";
 
@@ -22,12 +23,24 @@ static can_filter_entry_t s_entries[CAN_FILTER_MAX_ENTRIES];
 static size_t             s_count = 0;
 static SemaphoreHandle_t  s_lock = NULL;
 
+// An app that writes no list (DashPilot before it did) gets what the hardware filters used to accept: every
+// message in dbc/used_messages.txt.
+static void route_defaults(void)
+{
+    for (int i = 0; i < DBC_DEFAULT_ID_COUNT; i++) {
+        can_route_forward_add(g_dbc_default_ids[i] >> 11, g_dbc_default_ids[i] & 0x7FF);
+    }
+}
+
 esp_err_t can_filter_init(void)
 {
     if (s_lock) return ESP_OK;
     s_lock = xSemaphoreCreateMutex();
     if (!s_lock) return ESP_ERR_NO_MEM;
     s_count = 0;
+    can_route_forward_begin();
+    route_defaults();
+    can_route_forward_commit();
     return ESP_OK;
 }
 
@@ -79,18 +92,18 @@ esp_err_t can_filter_set(const uint8_t *data, size_t len)
 
     s_count = new_count;
     // The per-frame decision is made by can_route (lock-free bit lookups), so mirror the accepted list into it.
-    // An empty list forwards nothing.
     can_route_forward_begin();
     for (size_t i = 0; i < new_count; i++) {
         can_route_forward_add(s_entries[i].bus_id, s_entries[i].addr);
     }
+    if (!new_count) route_defaults();
     can_route_forward_commit();
     xSemaphoreGive(s_lock);
     can_manager_apply_filters();
 
     ESP_LOGI(TAG, "Filter updated from %u-byte write: %u entries%s",
              (unsigned)len, (unsigned)new_count,
-             new_count == 0 ? " (nothing forwarded)" : "");
+             new_count == 0 ? " (used_messages.txt ids)" : "");
     for (size_t i = 0; i < new_count; i++) {
         // Safe to read s_entries here without the lock: only this task
         // (the BLE host task) ever writes to the table.

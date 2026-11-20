@@ -356,7 +356,7 @@ static int gap_event_handler(struct ble_gap_event *event, void *arg)
             }
             update_active();
             if (conn_count() == 0) {
-                // Reset the CAN filter to pass-through for the next client.
+                // Reset the CAN filter to its default (the used_messages.txt ids) for the next client.
                 can_filter_set(NULL, 0);
             }
         }

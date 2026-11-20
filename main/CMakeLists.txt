@@ -27,6 +27,7 @@ idf_component_register(
         "can/mcp251xfd_stream.c"
         "can/can_manager.c"
         "can/can_filter.c"
+        "can/can_diag.c"
         "can/dbc/dbc.c"
         "can/dbc/dbc_generated.c"
         "controls/vehicle_control.c"

@@ -1,4 +1,5 @@
 #include "mcp251xfd.h"
+#include "can_diag.h"
 #include "esp_log.h"
 #include "esp_timer.h"
 #include "freertos/FreeRTOS.h"
@@ -393,6 +394,21 @@ static void overflow_report_cb(void *arg)
                  (unsigned long)(now.rx_overflow[3] - was->rx_overflow[3]),
                  (unsigned long)now.tx_frames, (unsigned long)now.tx_full,
                  (unsigned long)step_max, (unsigned long)gap_max);
+    }
+    if (can_diag_enabled()) {
+        uint8_t d[8];
+        can_diag_put16(d, (rx - rx_was) / secs);
+        can_diag_put16(d + 2, ov);
+        for (int i = 0; i < MCPFD_LANES; i++) d[4 + i] = can_diag_sat8(now.rx_overflow[i]);
+        can_diag_emit(ctx->bus_id, CAN_DIAG_ID_STREAM_RX, d);
+        can_diag_pack4(d, now.tx_frames - was->tx_frames, now.tx_full - was->tx_full, step_max, gap_max);
+        can_diag_emit(ctx->bus_id, CAN_DIAG_ID_STREAM_TX, d);
+        can_diag_put16(d, now.rx_head_glitch);
+        can_diag_put16(d + 2, now.rx_head_unconfirmed);
+        d[4] = can_diag_sat8(now.rx_bad_status);
+        d[5] = can_diag_sat8(now.rx_desync);
+        can_diag_put16(d + 6, now.spi_errors);
+        can_diag_emit(ctx->bus_id, CAN_DIAG_ID_STREAM_ERR, d);
     }
     if (now.rx_head_glitch != was->rx_head_glitch || now.rx_head_unconfirmed != was->rx_head_unconfirmed ||
         now.rx_bad_status != was->rx_bad_status || now.rx_desync != was->rx_desync ||

@@ -15,6 +15,7 @@
 #include "battery_preheat.h"
 #include "vehicle_control.h"  // VC_CMD_BATTERY_PREHEAT
 #include "dbc.h"
+#include "can_manager.h"
 
 #include "esp_log.h"
 
@@ -48,6 +49,15 @@ bool battery_preheat_enabled(void)
     return s_enabled;
 }
 
+// Tells the app whether the injection is on, as an app-only frame (never sent on CAN): DASHKIT_status, bus 1,
+// 0x7F3, bit 0. Once a second and on every change, so the app's Preheat button matches after a reconnect, an
+// app restart or a multi-finger toggle.
+static void report(void)
+{
+    can_tagged_frame_t t = { .bus_id = BUS, .frame = { .id = 0x7F3, .dlc = 1, .data = { s_enabled } } };
+    can_manager_inject(&t);
+}
+
 // ---- Automation hooks ----
 static void battery_preheat_init(automation_t *self)
 {
@@ -61,6 +71,11 @@ static void battery_preheat_init(automation_t *self)
 static void battery_preheat_on_tick(automation_t *self)
 {
     (void)self;
+    static uint8_t tick;
+    if (++tick >= 10) {
+        tick = 0;
+        report();
+    }
     if (!s_enabled) {
         return;
     }
@@ -113,6 +128,7 @@ static void battery_preheat_on_config(automation_t *self, uint8_t opcode, uint16
                  enable ? "ENABLED" : "disabled");
     }
     s_enabled = enable;
+    report();
 }
 
 automation_t battery_preheat_automation = {

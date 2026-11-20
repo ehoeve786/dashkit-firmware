@@ -955,9 +955,11 @@ esp_err_t ble_server_notify(const uint8_t *data, size_t len)
         return ESP_ERR_INVALID_STATE;
     }
     esp_err_t err = notify_one(conn, data, len);
-    // The other phones get each packet once, after the active one took it (the caller retries ESP_ERR_NO_MEM);
-    // one that can't keep up just misses packets.
-    for (uint8_t i = 0, n = err == ESP_OK ? s_n_others : 0; i < n; i++) {
+    // The other phones get each packet once, after the active one took it (the caller retries ESP_ERR_NO_MEM),
+    // and only while the buffers are nearly all free (32 of 36: about one packet waiting): a slower link (an
+    // iPhone's 30 ms interval) then misses packets instead of holding the buffers the active phone needs, which
+    // had stalled the stream to both.
+    for (uint8_t i = 0, n = err == ESP_OK ? s_n_others : 0; i < n && os_msys_num_free() >= 32; i++) {
         notify_one(s_others[i], data, len);
     }
     return err;

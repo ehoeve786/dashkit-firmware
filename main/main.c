@@ -9,6 +9,7 @@
 #include "mcp251xfd.h"
 #include "ble_server.h"
 #include "ble_stream.h"
+#include "can_diag.h"
 #include "ble_ota.h"
 #include "ble_appchan.h"
 #include "tesla_ble_adapter.h"
@@ -64,6 +65,8 @@ static void mark_app_valid_cb(void *arg)
 static bool want_frame(const can_tagged_frame_t *f, void *ctx)
 {
     const ble_receiver_t *r = ctx;
+    // The firmware's diagnostic records go to the primary device, which switched them on.
+    if (f->bus_id & CAN_DIAG_BUS_FLAG) return r->primary;
     return can_filter_wants(r->slot, f->bus_id, f->frame.id);
 }
 

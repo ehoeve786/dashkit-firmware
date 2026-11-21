@@ -1,5 +1,6 @@
 #include "can_manager.h"
 #include "can_filter.h"
+#include "can_diag.h"
 #include "automation_manager.h"
 #include "vehicle_control.h"
 #include "dbc.h"
@@ -20,15 +21,38 @@ static can_interface_t *s_interfaces[CAN_MANAGER_MAX_INTERFACES];
 static int              s_iface_count = 0;
 static QueueHandle_t    s_rx_queue = NULL;
 
+// Routing totals for the diagnostic records: plain counters bumped from the two
+// CAN RX tasks. A lost increment only makes a reported rate slightly low.
+#define ROUTE_REPORT_US  (5 * 1000 * 1000)
+static volatile uint32_t   s_seen, s_used, s_forwarded, s_queue_full;
+static uint32_t            s_rep_seen, s_rep_used, s_rep_forwarded;
+static esp_timer_handle_t  s_route_timer;
+
+static void route_report_cb(void *arg)
+{
+    (void)arg;
+    uint32_t seen = s_seen, used = s_used, fwd = s_forwarded, full = s_queue_full;
+    uint32_t secs = ROUTE_REPORT_US / 1000000;
+    if (can_diag_enabled()) {
+        uint8_t d[8];
+        can_diag_pack4(d, (seen - s_rep_seen) / secs, (used - s_rep_used) / secs,
+                       (fwd - s_rep_forwarded) / secs, full);
+        can_diag_emit(0, CAN_DIAG_ID_ROUTE, d);
+    }
+    s_rep_seen = seen; s_rep_used = used; s_rep_forwarded = fwd;
+}
+
 // Callback invoked by CAN drivers from their RX tasks
 static void on_frame_received(const can_tagged_frame_t *frame, void *user_ctx)
 {
     (void)user_ctx;
     if (!s_rx_queue) return;
+    s_seen++;
     // The controllers deliver every frame on the bus. The firmware's own work is only for the ids in
     // dbc/used_messages.txt, the same frames the hardware filters let through before; the rest of the bus
     // skips straight to the app's filter, so it costs two bit lookups per frame.
     if (!frame->frame.extended && can_filter_is_used(frame->bus_id, frame->frame.id)) {
+        s_used++;
         // Feed the DBC value cache first so automation on_frame handlers (which read
         // signals via can_get) observe this frame's current contents.
         dbc_observe_frame(frame);
@@ -45,7 +69,8 @@ static void on_frame_received(const can_tagged_frame_t *frame, void *user_ctx)
     can_tagged_frame_t stamped = *frame;
     stamped.timestamp_us = (uint32_t)esp_timer_get_time();
     // Drop frame if queue is full rather than blocking the driver
-    xQueueSend(s_rx_queue, &stamped, 0);
+    if (xQueueSend(s_rx_queue, &stamped, 0) == pdTRUE) s_forwarded++;
+    else s_queue_full++;
 }
 
 esp_err_t can_manager_init(void)
@@ -55,6 +80,10 @@ esp_err_t can_manager_init(void)
         return ESP_ERR_NO_MEM;
     }
     s_iface_count = 0;
+    const esp_timer_create_args_t route_args = { .callback = route_report_cb, .name = "can_route" };
+    if (esp_timer_create(&route_args, &s_route_timer) == ESP_OK) {
+        esp_timer_start_periodic(s_route_timer, ROUTE_REPORT_US);
+    }
     ESP_LOGI(TAG, "CAN manager initialized (queue depth=%d)", RX_QUEUE_DEPTH);
     return ESP_OK;
 }
@@ -115,6 +144,14 @@ esp_err_t can_manager_send(uint8_t bus_id, const can_frame_t *frame)
     }
     ESP_LOGW(TAG, "send: no interface for bus_id=%d", bus_id);
     return ESP_ERR_NOT_FOUND;
+}
+
+esp_err_t can_manager_inject_unfiltered(const can_tagged_frame_t *frame)
+{
+    if (!s_rx_queue) return ESP_ERR_INVALID_STATE;
+    can_tagged_frame_t stamped = *frame;
+    stamped.timestamp_us = (uint32_t)esp_timer_get_time();
+    return xQueueSend(s_rx_queue, &stamped, 0) == pdTRUE ? ESP_OK : ESP_ERR_NO_MEM;
 }
 
 esp_err_t can_manager_inject(const can_tagged_frame_t *frame)

@@ -3,6 +3,7 @@
 #include "ble_appchan.h"
 #include "bthome.h"
 #include "can_filter.h"
+#include "can_diag.h"
 #include "can_manager.h"
 #include "can_interface.h"
 #include "ble_stream.h"
@@ -401,6 +402,9 @@ static int gap_event_handler(struct ble_gap_event *event, void *arg)
                 ble_ota_on_disconnect();
             }
             update_active();
+            if (conn_count() == 0) {
+                can_diag_set_enabled(false);
+            }
         }
         start_advertising();
         break;

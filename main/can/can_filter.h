@@ -48,3 +48,10 @@ bool can_filter_should_forward(uint8_t bus_id, uint32_t addr);
 
 // Return true if the device in `slot` gets that frame.
 bool can_filter_wants(uint8_t slot, uint8_t bus_id, uint32_t addr);
+
+// "Every frame of this bus" in a list (the app's "Log every frame").
+#define CAN_FILTER_ADDR_ALL  0xFFFFFFFFu
+
+// Return true if a connected device asked for every frame of `bus_id`. Takes the filter lock: not for the
+// per-frame path (the CAN manager samples it).
+bool can_filter_all(uint8_t bus_id);

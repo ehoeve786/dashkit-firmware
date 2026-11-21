@@ -1,4 +1,5 @@
 #include "mcp251xfd.h"
+#include "can_diag.h"
 #include "esp_log.h"
 #include "esp_timer.h"
 #include "freertos/FreeRTOS.h"
@@ -111,6 +112,7 @@ typedef struct {
     // back to back.
     mcpfd_stream_t      stream;
     SemaphoreHandle_t   spi_gate;
+    uint32_t            stall_max_boot_us; // longest read step or busy gap since boot (test diagnostics)
     volatile bool       stream_ready;      // filters programmed, chip in normal mode
     mcpfd_stats_t       stats_reported;    // snapshot at the last report
     volatile uint32_t   step_max_us;       // longest single service step
@@ -381,6 +383,8 @@ static void overflow_report_cb(void *arg)
     uint32_t step_max = ctx->step_max_us, gap_max = ctx->busy_gap_max_us;
     ctx->step_max_us = 0;
     ctx->busy_gap_max_us = 0;
+    if (step_max > ctx->stall_max_boot_us) ctx->stall_max_boot_us = step_max;
+    if (gap_max > ctx->stall_max_boot_us) ctx->stall_max_boot_us = gap_max;
     if (ov != ov_was || now.tx_full != was->tx_full) {
         ESP_LOGI(TAG, "bus%u stream: rx %lu fps, overflows %lu (+%lu; per lane +%lu +%lu +%lu +%lu) "
                       "tx %lu (full %lu) step max %lu us, busy gap max %lu us",
@@ -394,6 +398,40 @@ static void overflow_report_cb(void *arg)
                  (unsigned long)now.tx_frames, (unsigned long)now.tx_full,
                  (unsigned long)step_max, (unsigned long)gap_max);
     }
+    if (can_diag_enabled()) {
+        uint8_t d[8];
+        can_diag_put16(d, (rx - rx_was) / secs);
+        can_diag_put16(d + 2, ov);
+        for (int i = 0; i < MCPFD_LANES; i++) d[4 + i] = can_diag_sat8(now.rx_overflow[i]);
+        can_diag_emit(ctx->bus_id, CAN_DIAG_ID_STREAM_RX, d);
+        can_diag_pack4(d, now.tx_frames - was->tx_frames, now.tx_full - was->tx_full, step_max, gap_max);
+        can_diag_emit(ctx->bus_id, CAN_DIAG_ID_STREAM_TX, d);
+        can_diag_put16(d, now.rx_head_glitch);
+        can_diag_put16(d + 2, now.rx_head_unconfirmed);
+        d[4] = can_diag_sat8(now.rx_bad_status);
+        d[5] = can_diag_sat8(now.rx_desync);
+        can_diag_put16(d + 6, now.spi_errors);
+        can_diag_emit(ctx->bus_id, CAN_DIAG_ID_STREAM_ERR, d);
+
+        // CAN error state: the counters as they are now, and what the chip
+        // recorded since the last report (then cleared).
+        uint32_t trec = 0, diag0 = 0, diag1 = 0;
+        if (read_reg32(ctx, REG_C1TREC, &trec) == ESP_OK &&
+            read_reg32(ctx, REG_C1BDIAG0, &diag0) == ESP_OK &&
+            read_reg32(ctx, REG_C1BDIAG1, &diag1) == ESP_OK) {
+            write_reg32(ctx, REG_C1BDIAG0, 0);
+            write_reg32(ctx, REG_C1BDIAG1, 0);
+            d[0] = (uint8_t)(trec >> 8);          // TEC
+            d[1] = (uint8_t)trec;                 // REC
+            d[2] = (uint8_t)((trec >> 16) & 0x3F);
+            d[3] = (uint8_t)(diag0 >> 8);         // NTERRCNT
+            d[4] = (uint8_t)diag0;                // NRERRCNT
+            d[5] = (uint8_t)(diag1 >> 16);
+            d[6] = (uint8_t)(diag1 >> 24);
+            d[7] = can_diag_sat8(ctx->stall_max_boot_us / 1000);
+            can_diag_emit(ctx->bus_id, CAN_DIAG_ID_BUS_ERR, d);
+        }
+    }
     if (now.rx_head_glitch != was->rx_head_glitch || now.rx_head_unconfirmed != was->rx_head_unconfirmed ||
         now.rx_bad_status != was->rx_bad_status || now.rx_desync != was->rx_desync ||
         now.spi_errors != was->spi_errors) {
@@ -405,6 +443,17 @@ static void overflow_report_cb(void *arg)
                  (unsigned long)now.rx_desync, (unsigned long)now.spi_errors);
     }
     ctx->stats_reported = now;
+}
+
+// Test builds: report every started bus right now (the end of a firmware update, just before the reboot
+// that would lose the since-boot counters).
+static mcp251xfd_ctx_t *s_reporting[2];
+
+void mcp251xfd_report_now(void)
+{
+    for (size_t i = 0; i < sizeof(s_reporting) / sizeof(s_reporting[0]); i++) {
+        if (s_reporting[i]) overflow_report_cb(s_reporting[i]);
+    }
 }
 
 // How long the RX task may drain without a break before it sleeps one tick, so
@@ -656,6 +705,7 @@ static esp_err_t iface_start(can_interface_t *self)
         .arg = ctx,
         .name = "can_rxov",
     };
+    if (ctx->bus_id < sizeof(s_reporting) / sizeof(s_reporting[0])) s_reporting[ctx->bus_id] = ctx;
     if (esp_timer_create(&ov_args, &ctx->overflow_timer) == ESP_OK) {
         esp_timer_start_periodic(ctx->overflow_timer, RX_OVERFLOW_REPORT_US);
     }

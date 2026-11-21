@@ -70,10 +70,33 @@ static void set_add_list(filter_set_t *w, const slot_t *s)
         return;
     }
     for (size_t i = 0; i < s->count; i++) {
-        if (fast_path(s->entries[i].bus_id, s->entries[i].addr)) {
-            bit_set(w->bits[s->entries[i].bus_id], s->entries[i].addr);
+        uint8_t bus = s->entries[i].bus_id;
+        if (fast_path(bus, s->entries[i].addr)) {
+            bit_set(w->bits[bus], s->entries[i].addr);
+        } else if (s->entries[i].addr == CAN_FILTER_ADDR_ALL && bus < FILTER_BUSES) {
+            // Test builds: the app's "Log every frame" asks for a whole bus. All of it does not fit through BLE
+            // (about 2,500 frames/s per bus), so the device gets every used_messages.txt id of that bus, which
+            // adds the messages only the firmware reads (stalks, wiper state, ...). The comma 3X gets the whole
+            // bus over USB meanwhile (can_filter_all).
+            for (size_t k = 0; k < FILTER_WORDS; k++) w->bits[bus][k] |= s_used[bus][k];
         }
     }
+}
+
+bool can_filter_all(uint8_t bus_id)
+{
+    if (!s_lock) return false;
+    xSemaphoreTake(s_lock, portMAX_DELAY);
+    bool all = false;
+    for (uint8_t i = 0; i < CAN_FILTER_SLOTS && !all; i++) {
+        const slot_t *s = &s_slots[i];
+        if (!s->open || !s->has_list) continue;
+        for (size_t k = 0; k < s->count && !all; k++) {
+            all = s->entries[k].bus_id == bus_id && s->entries[k].addr == CAN_FILTER_ADDR_ALL;
+        }
+    }
+    xSemaphoreGive(s_lock);
+    return all;
 }
 
 // Rebuild the set of `slot` and the union of every connected device. Caller holds s_lock.

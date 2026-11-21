@@ -2,6 +2,7 @@
 #include "dbc.h"
 #include "automation_manager.h"
 #include "ble_server.h"
+#include "can_diag.h"
 
 #include "esp_log.h"
 #include "esp_system.h"
@@ -345,6 +346,10 @@ static void vehicle_control_task(void *arg)
             door_unlatch(req.value);
             continue;
         }
+        if (req.opcode == VC_CMD_DIAG_LOG) {
+            can_diag_set_enabled(req.value != 0);
+            continue;
+        }
         if (req.opcode == VC_CMD_REBOOT) {
             ESP_LOGW(TAG, "reboot requested, restarting");
             vTaskDelay(pdMS_TO_TICKS(200));  // let the BLE write ack flush
@@ -390,6 +395,7 @@ esp_err_t vehicle_control_submit(uint8_t opcode, uint16_t value)
         opcode != VC_CMD_MIRROR_DIP_TOGGLE &&
         opcode != VC_CMD_REBOOT &&
         opcode != VC_CMD_DOOR_UNLATCH &&
+        opcode != VC_CMD_DIAG_LOG &&
         !is_config_opcode(opcode) &&
         !find_command(opcode)) {
         ESP_LOGW(TAG, "reject unknown opcode 0x%02X", opcode);

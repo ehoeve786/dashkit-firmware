@@ -1,3 +1,4 @@
+#include "mcp251xfd.h"
 #include "ble_ota.h"
 #include "ble_server.h"
 #include "esp_log.h"
@@ -236,6 +237,8 @@ static void handle_data(const uint8_t *data, uint16_t len)
 
         s_ota_in_progress = false;
         ESP_LOGI(TAG, "OTA successful, rebooting in 1s...");
+        // Test builds: the since-boot receive counters, which cover the update, before the reboot clears them.
+        mcp251xfd_report_now();
 
         // Send completion notification
         send_status(OTA_STATUS_DONE, NULL, 0);

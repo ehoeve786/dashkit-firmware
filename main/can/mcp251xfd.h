@@ -22,4 +22,7 @@ typedef struct {
 can_interface_t *mcp251xfd_create(const mcp251xfd_config_t *config);
 
 // Destroy and free resources
+// Test builds: emit the receive statistics of every started bus now.
+void mcp251xfd_report_now(void);
+
 void mcp251xfd_destroy(can_interface_t *iface);

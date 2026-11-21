@@ -112,6 +112,7 @@ typedef struct {
     // back to back.
     mcpfd_stream_t      stream;
     SemaphoreHandle_t   spi_gate;
+    uint32_t            stall_max_boot_us; // longest read step or busy gap since boot (test diagnostics)
     volatile bool       stream_ready;      // filters programmed, chip in normal mode
     mcpfd_stats_t       stats_reported;    // snapshot at the last report
     volatile uint32_t   step_max_us;       // longest single service step
@@ -382,6 +383,8 @@ static void overflow_report_cb(void *arg)
     uint32_t step_max = ctx->step_max_us, gap_max = ctx->busy_gap_max_us;
     ctx->step_max_us = 0;
     ctx->busy_gap_max_us = 0;
+    if (step_max > ctx->stall_max_boot_us) ctx->stall_max_boot_us = step_max;
+    if (gap_max > ctx->stall_max_boot_us) ctx->stall_max_boot_us = gap_max;
     if (ov != ov_was || now.tx_full != was->tx_full) {
         ESP_LOGI(TAG, "bus%u stream: rx %lu fps, overflows %lu (+%lu; per lane +%lu +%lu +%lu +%lu) "
                       "tx %lu (full %lu) step max %lu us, busy gap max %lu us",
@@ -425,7 +428,7 @@ static void overflow_report_cb(void *arg)
             d[4] = (uint8_t)diag0;                // NRERRCNT
             d[5] = (uint8_t)(diag1 >> 16);
             d[6] = (uint8_t)(diag1 >> 24);
-            d[7] = 0;
+            d[7] = can_diag_sat8(ctx->stall_max_boot_us / 1000);
             can_diag_emit(ctx->bus_id, CAN_DIAG_ID_BUS_ERR, d);
         }
     }
@@ -440,6 +443,17 @@ static void overflow_report_cb(void *arg)
                  (unsigned long)now.rx_desync, (unsigned long)now.spi_errors);
     }
     ctx->stats_reported = now;
+}
+
+// Test builds: report every started bus right now (the end of a firmware update, just before the reboot
+// that would lose the since-boot counters).
+static mcp251xfd_ctx_t *s_reporting[2];
+
+void mcp251xfd_report_now(void)
+{
+    for (size_t i = 0; i < sizeof(s_reporting) / sizeof(s_reporting[0]); i++) {
+        if (s_reporting[i]) overflow_report_cb(s_reporting[i]);
+    }
 }
 
 // How long the RX task may drain without a break before it sleeps one tick, so
@@ -691,6 +705,7 @@ static esp_err_t iface_start(can_interface_t *self)
         .arg = ctx,
         .name = "can_rxov",
     };
+    if (ctx->bus_id < sizeof(s_reporting) / sizeof(s_reporting[0])) s_reporting[ctx->bus_id] = ctx;
     if (esp_timer_create(&ov_args, &ctx->overflow_timer) == ESP_OK) {
         esp_timer_start_periodic(ctx->overflow_timer, RX_OVERFLOW_REPORT_US);
     }

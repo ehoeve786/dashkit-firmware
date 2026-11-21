@@ -121,6 +121,13 @@ esp_err_t can_filter_set(const uint8_t *data, size_t len)
         for (size_t i = 0; i < new_count; i++) {
             if (fast_path(s_entries[i].bus_id, s_entries[i].addr)) {
                 bit_set(s_app[next][s_entries[i].bus_id], s_entries[i].addr);
+            } else if (s_entries[i].addr == 0xFFFFFFFFu && s_entries[i].bus_id < FILTER_BUSES) {
+                // Test builds only: the app's "Log every frame" asks for a whole bus. All of it does not
+                // fit through BLE (about 2,500 frames/s per bus), so it gets every used_messages.txt id of
+                // that bus, which adds the messages only the firmware reads (stalks, wiper state, ...).
+                for (size_t w = 0; w < sizeof(s_used[0]) / sizeof(s_used[0][0]); w++) {
+                    s_app[next][s_entries[i].bus_id][w] |= s_used[s_entries[i].bus_id][w];
+                }
             }
         }
         s_app_idx = next;

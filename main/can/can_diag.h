@@ -17,7 +17,7 @@
 
 #define CAN_DIAG_BUS_FLAG     0x10           // bus byte = flag | CAN bus (0 if not per bus)
 
-// [0] record format (3)  [1] 1 = the whole bus is received  [2] receive lanes
+// [0] record format (4)  [1] 1 = the whole bus is received  [2] receive lanes
 // [3] messages per lane  [4..7] uptime, seconds
 #define CAN_DIAG_ID_HELLO     0x1DA50000u
 // Per bus: [0..1] frames/s received, last 5 s  [2..3] overflow events since boot, all lanes
@@ -29,12 +29,18 @@
 // Per bus, since boot: [0..1] head index stale  [2..3] head index not confirmed by the second read
 // [4] FIFO status outside the layout  [5] desyncs  [6..7] SPI errors
 #define CAN_DIAG_ID_STREAM_ERR 0x1DA50003u
+// Per bus, CAN error state: [0] transmit error counter  [1] receive error counter (both as of now)
+// [2] flags as of now: bit 0 error warning, 1 RX warning, 2 TX warning, 3 RX error passive,
+//     4 TX error passive, 5 bus off
+// Last 5 s: [3] transmit errors  [4] receive errors (saturating at 255)
+// [5..6] error kinds seen: bit 0 bit0, 1 bit1, 2 ACK, 3 form, 4 stuff, 5 CRC, 7 went bus off
+#define CAN_DIAG_ID_BUS_ERR   0x1DA50006u
 // Both buses, last 5 s unless noted: [0..1] frames/s seen
 // [2..3] frames/s used by the firmware  [4..5] frames/s queued for the app
 // [6..7] frames dropped because the app queue was full, since boot
 #define CAN_DIAG_ID_ROUTE     0x1DA50010u
 
-#define CAN_DIAG_FORMAT       3
+#define CAN_DIAG_FORMAT       4
 
 static inline uint16_t can_diag_sat16(uint32_t v) { return v > 0xFFFFu ? 0xFFFFu : (uint16_t)v; }
 static inline uint8_t  can_diag_sat8(uint32_t v)  { return v > 0xFFu ? 0xFFu : (uint8_t)v; }

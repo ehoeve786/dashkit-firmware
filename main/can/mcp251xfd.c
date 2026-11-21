@@ -409,6 +409,25 @@ static void overflow_report_cb(void *arg)
         d[5] = can_diag_sat8(now.rx_desync);
         can_diag_put16(d + 6, now.spi_errors);
         can_diag_emit(ctx->bus_id, CAN_DIAG_ID_STREAM_ERR, d);
+
+        // CAN error state: the counters as they are now, and what the chip
+        // recorded since the last report (then cleared).
+        uint32_t trec = 0, diag0 = 0, diag1 = 0;
+        if (read_reg32(ctx, REG_C1TREC, &trec) == ESP_OK &&
+            read_reg32(ctx, REG_C1BDIAG0, &diag0) == ESP_OK &&
+            read_reg32(ctx, REG_C1BDIAG1, &diag1) == ESP_OK) {
+            write_reg32(ctx, REG_C1BDIAG0, 0);
+            write_reg32(ctx, REG_C1BDIAG1, 0);
+            d[0] = (uint8_t)(trec >> 8);          // TEC
+            d[1] = (uint8_t)trec;                 // REC
+            d[2] = (uint8_t)((trec >> 16) & 0x3F);
+            d[3] = (uint8_t)(diag0 >> 8);         // NTERRCNT
+            d[4] = (uint8_t)diag0;                // NRERRCNT
+            d[5] = (uint8_t)(diag1 >> 16);
+            d[6] = (uint8_t)(diag1 >> 24);
+            d[7] = 0;
+            can_diag_emit(ctx->bus_id, CAN_DIAG_ID_BUS_ERR, d);
+        }
     }
     if (now.rx_head_glitch != was->rx_head_glitch || now.rx_head_unconfirmed != was->rx_head_unconfirmed ||
         now.rx_bad_status != was->rx_bad_status || now.rx_desync != was->rx_desync ||

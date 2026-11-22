@@ -4,10 +4,14 @@
 #include "automation_manager.h"
 #include "vehicle_control.h"
 #include "dbc.h"
+#include "driver/usb_serial_jtag.h"
 #include "esp_log.h"
 #include "esp_timer.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/queue.h"
+#include "freertos/task.h"
+#include <stdio.h>
+#include <stdlib.h>
 #include <stdbool.h>
 #include <string.h>
 
@@ -42,6 +46,124 @@ static void route_report_cb(void *arg)
     s_rep_seen = seen; s_rep_used = used; s_rep_forwarded = fwd;
 }
 
+
+// USB serial link with the comma 3X (USB-Serial-JTAG driver, not the log console: its no-driver path can wedge
+// for good when the host drops mid-line). Writes never block; a line that doesn't fit is dropped whole.
+//  out: "A,<bus>,<id>,<hex>" (id: 3 hex digits, 8 if extended), batched:
+//       - always: the chassis-bus (0) frames the C3X can't see: DAS_lanes 0x239, DAS_carLog 0x5D9,
+//         DAS_autopilotDebug 0x247, UI_gpsVehicleSpeed 0x2F8, APP_frontParkAssistData 0x34B (~35 frames/s);
+//       - while the app takes a whole bus ("Log every frame") and the C3X is up: every frame of that bus (0 and 1),
+//         the rest of it here instead of over BLE (which still gets the ids the app asked for by id). The C3X
+//         records them.
+//       Once a second while the C3X is up: "S,<queue drops>,<write drops>" (totals since boot).
+//       The CAN RX path only queues (never blocks; dropped if the queue is full).
+//  in:  "C,<bus>,<id>,<hex>" frames for the app only (never sent on CAN): bus 1 id 0x7F0 = openpilot state
+//       (COMMA_status), bus 2 = the C3X's party bus, bus 3 = its Autopilot side. Anything else, or a line that isn't
+//       exactly one frame (a write cut short on the C3X), is dropped. No status for 2 s (C3X off or unplugged): one
+//       all-zero COMMA_status clears it, and whole buses go back to BLE.
+#define COMMA_ID 0x7F0
+typedef struct { uint32_t id; uint8_t bus, dlc, ext, data[8]; } c3x_frame_t;
+static QueueHandle_t    s_c3x_q = NULL;
+static volatile bool    s_c3x_up;
+static volatile bool    s_c3x_all[2];  // C3X up and a device asked for this whole bus
+static volatile uint32_t s_c3x_qdrop, s_c3x_wdrop;
+
+static bool c3x_line(char *in, int len)
+{
+    unsigned bus;
+    unsigned long id;
+    char hex[17];
+    int n = -1;
+    if (len && in[len - 1] == '\r') in[--len] = 0;
+    if (sscanf(in, "C,%u,%lx,%16[0-9a-fA-F]%n", &bus, &id, hex, &n) != 3 || n != len || id > 0x7FF ||
+        !((bus == 1 && id == COMMA_ID) || bus == 2 || bus == 3)) return false;
+    int hl = strlen(hex);
+    if (hl % 2) return false;
+    can_tagged_frame_t t = { .bus_id = bus, .frame = { .id = id, .dlc = hl / 2 } };
+    for (int i = 0; i < hl / 2; i++) {
+        char h[3] = { hex[2 * i], hex[2 * i + 1], 0 };
+        t.frame.data[i] = strtoul(h, NULL, 16);
+    }
+    can_manager_inject(&t);
+    return bus == 1;
+}
+
+static int a_line(char *o, const c3x_frame_t *f)
+{
+    static const char hx[] = "0123456789abcdef";
+    char *p = o;
+    *p++ = 'A'; *p++ = ','; *p++ = '0' + f->bus; *p++ = ',';
+    int nd = f->ext ? 8 : 3;
+    for (int i = nd - 1; i >= 0; i--) p[i] = hx[(f->id >> (4 * (nd - 1 - i))) & 15];
+    p += nd;
+    *p++ = ',';
+    for (int i = 0; i < f->dlc; i++) { *p++ = hx[f->data[i] >> 4]; *p++ = hx[f->data[i] & 15]; }
+    *p++ = '\n';
+    return p - o;
+}
+
+static void lanes_task(void *arg)
+{
+    static char out[1024];
+    c3x_frame_t f;
+    char b[48], in[48];
+    int il = 0;
+    int64_t last_c = 0, last_s = 0, last_a = 0;
+    for (;;) {
+        int r;
+        while ((r = usb_serial_jtag_read_bytes(b, sizeof(b), 0)) > 0) {
+            for (int i = 0; i < r; i++) {
+                if (b[i] != '\n') { if (il < (int)sizeof(in) - 1) in[il++] = b[i]; continue; }
+                in[il] = 0;
+                if (c3x_line(in, il)) { last_c = esp_timer_get_time(); s_c3x_up = true; }
+                il = 0;
+            }
+        }
+        int64_t now = esp_timer_get_time();
+        if (last_c && now - last_c > 2000000) {
+            char z[] = "C,1,7f0,0000000000000000";
+            c3x_line(z, sizeof(z) - 1);
+            last_c = 0;
+            s_c3x_up = false;
+        }
+        if (now - last_a >= 100000) {  // can_filter_all takes the filter lock: sampled, not per frame
+            last_a = now;
+            for (uint8_t bus = 0; bus < 2; bus++) s_c3x_all[bus] = s_c3x_up && can_filter_all(bus);
+        }
+        int n = 0, lines = 0;
+        if (s_c3x_up && now - last_s >= 1000000) {
+            last_s = now;
+            n = snprintf(out, sizeof(out), "S,%lu,%lu\n", (unsigned long)s_c3x_qdrop, (unsigned long)s_c3x_wdrop);
+        }
+        // 10 ms wait when idle: ~350 C3X lines/s come in
+        if (xQueueReceive(s_c3x_q, &f, n ? 0 : pdMS_TO_TICKS(10)) == pdTRUE) {
+            do { n += a_line(out + n, &f); lines++; }
+            while (n < (int)sizeof(out) - 32 && xQueueReceive(s_c3x_q, &f, 0) == pdTRUE);
+        }
+        if (n && usb_serial_jtag_write_bytes(out, n, 0) != n) s_c3x_wdrop += lines;
+    }
+}
+
+static void c3x_queue(const can_tagged_frame_t *t)
+{
+    c3x_frame_t f = { .id = t->frame.id, .bus = t->bus_id, .dlc = t->frame.dlc > 8 ? 8 : t->frame.dlc,
+                      .ext = t->frame.extended };
+    memcpy(f.data, t->frame.data, f.dlc);
+    if (xQueueSend(s_c3x_q, &f, 0) != pdTRUE) s_c3x_qdrop++;
+}
+
+// Chassis-bus frames the comma 3X always gets over USB.
+static inline bool c3x_tap(const can_tagged_frame_t *frame)
+{
+    if (frame->bus_id != 0 || frame->frame.extended) return false;
+    switch (frame->frame.id) {
+    case 0x239: case 0x5D9: case 0x247: case 0x2F8: case 0x34B:
+        c3x_queue(frame);
+        return true;
+    }
+    return false;
+}
+
 // Callback invoked by CAN drivers from their RX tasks
 static void on_frame_received(const can_tagged_frame_t *frame, void *user_ctx)
 {
@@ -60,6 +182,8 @@ static void on_frame_received(const can_tagged_frame_t *frame, void *user_ctx)
         automation_manager_on_frame(frame);
         vehicle_control_on_frame(frame);
     }
+    // Whole bus with the C3X up: every frame of it goes to the C3X; BLE keeps the ids the devices asked for.
+    if (!c3x_tap(frame) && frame->bus_id < 2 && s_c3x_all[frame->bus_id]) c3x_queue(frame);
     // Drop non-matching frames at the source so the bridge task's batching
     // timeout reflects "no more *matching* frames" rather than "no more
     // frames at all". This avoids holding onto a matching frame while we
@@ -77,6 +201,11 @@ esp_err_t can_manager_init(void)
 {
     s_rx_queue = xQueueCreate(RX_QUEUE_DEPTH, sizeof(can_tagged_frame_t));
     if (!s_rx_queue) {
+        return ESP_ERR_NO_MEM;
+    }
+    usb_serial_jtag_driver_config_t usj = { .tx_buffer_size = 8192, .rx_buffer_size = 4096 };
+    s_c3x_q = xQueueCreate(512, sizeof(c3x_frame_t));
+    if (!s_c3x_q || usb_serial_jtag_driver_install(&usj) != ESP_OK || xTaskCreate(lanes_task, "lanes", 3072, NULL, 1, NULL) != pdPASS) {
         return ESP_ERR_NO_MEM;
     }
     s_iface_count = 0;

@@ -99,6 +99,7 @@ typedef struct {
     uint32_t connected_s;
     uint32_t sub_seq;          // global order of the last subscribe, 0 = never
     bool     read_only;        // opted out of driving the vehicle (0x4F 01); reset on reconnect
+    bool     claimed;          // asked to drive the vehicle (0x4F 00); reset on reconnect
     bool     compact;          // asked for compact CAN packets (0x52 01); reset on reconnect
 } conn_slot_t;
 
@@ -221,6 +222,7 @@ static void slot_open(conn_slot_t *slot, uint16_t handle)
     slot->connected_s = now_s();
     slot->sub_seq = 0;
     slot->read_only = false;
+    slot->claimed = false;
     slot->compact = false;
     can_filter_open((uint8_t)(slot - s_conns));
 }
@@ -254,7 +256,7 @@ static void update_active(void)
     for (int i = 0; i < MAX_CONNS; i++) {
         const conn_slot_t *s = &s_conns[i];
         cand[i] = (ble_stream_cand_t){
-            s->handle != BLE_HS_CONN_HANDLE_NONE && s->encrypted && s->subscribed, !s->read_only, s->sub_seq };
+            s->handle != BLE_HS_CONN_HANDLE_NONE && s->encrypted && s->subscribed, !s->read_only, s->sub_seq, s->claimed };
     }
     int p = ble_stream_pick_primary(cand, MAX_CONNS);
 
@@ -768,10 +770,12 @@ static int gatt_control_access(uint16_t conn_handle, uint16_t attr_handle,
         }
         if (opcode == VC_CMD_BLE_READ_ONLY) {
             slot->read_only = value != 0;
+            slot->claimed = value == 0;
         } else {
             slot->compact = value != 0;
         }
-        ESP_LOGI(TAG, "Connection %d: read_only=%d compact=%d", conn_handle, slot->read_only, slot->compact);
+        ESP_LOGI(TAG, "Connection %d: read_only=%d claimed=%d compact=%d", conn_handle, slot->read_only,
+                 slot->claimed, slot->compact);
         update_active();
         return 0;
     }

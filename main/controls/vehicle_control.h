@@ -99,6 +99,12 @@ typedef enum {
     // Not 0x4F: that is the BLE read-only role (upstream PR #87).
     VC_CMD_SIGNAL_OFF_ENABLE = 0x53,
 
+    // --- Compact CAN packets (see ble_stream_build) ---
+    // Handled in the BLE layer, per connection, never queued: [0x52][1=on, 0=off]
+    // (a zero high byte may follow). Not persisted; a reconnecting device starts
+    // with the original format.
+    VC_CMD_COMPACT = 0x52,
+
     // --- Door unlatch (VCSEC_requests 0x1F9) ---
     // Pops one door latch like the Tesla app's "Unlatch Door": the per-door
     // ClosureRequest = OPEN with reason RKE, held ~800 ms at the car's own

@@ -75,11 +75,15 @@ static bool want_frame(const can_tagged_frame_t *f, void *ctx)
 // not held up by it.
 static void send_to(const ble_receiver_t *r, const can_tagged_frame_t *batch, int count, uint8_t *buf, size_t max)
 {
-    for (int from = 0; from < count; ) {
-        int before = from;
-        size_t len = ble_stream_build(batch, count, &from, buf, max, want_frame, (void *)r);
-        if (from == before) return;  // a frame larger than the MTU: drop the rest
-        if (len && ble_server_notify_to(r, buf, len) != ESP_OK) return;
+    // A device that asked for compact packets gets them, then whatever doesn't fit the format in the original.
+    for (int pass = 0; pass < (r->compact ? 2 : 1); pass++) {
+        for (int from = 0; from < count; ) {
+            int before = from;
+            size_t len = ble_stream_build(batch, count, &from, buf, max, r->compact && pass == 0, pass == 1,
+                                          want_frame, (void *)r);
+            if (from == before) break;  // a frame larger than the MTU: drop the rest
+            if (len && ble_server_notify_to(r, buf, len) != ESP_OK) return;
+        }
     }
 }
 

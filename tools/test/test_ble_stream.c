@@ -40,35 +40,46 @@ static void packets_follow_the_device_filter_and_mtu(void)
     int from = 0;
 
     // Everything fits: count, then 18 bytes per 8-byte frame and 12 for a 2-byte one.
-    size_t len = ble_stream_build(b, 4, &from, buf, sizeof(buf), NULL, NULL);
+    size_t len = ble_stream_build(b, 4, &from, buf, sizeof(buf), false, false, NULL, NULL);
     CHECK(from == 4 && buf[0] == 4 && len == 1 + 18 + 18 + 12 + 18);
     CHECK(buf[1] == 0x04 && buf[4] == 0x01 && buf[5] == 1 && buf[6] == 0x00 && buf[7] == 0x01);  // ts LE, bus, id LE
     CHECK(buf[10] == 8 && buf[11] == 0x00 && buf[12] == 0x01);                                  // len, data
 
     // The device's filter skips frames it did not ask for.
     from = 0;
-    len = ble_stream_build(b, 4, &from, buf, sizeof(buf), want_bus1, NULL);
+    len = ble_stream_build(b, 4, &from, buf, sizeof(buf), false, false, want_bus1, NULL);
     CHECK(from == 4 && buf[0] == 3 && len == 1 + 18 + 12 + 18);
 
     // A small MTU splits the batch at frame boundaries, each packet with its own count.
     from = 0;
-    len = ble_stream_build(b, 4, &from, buf, 1 + 18, want_bus1, NULL);
+    len = ble_stream_build(b, 4, &from, buf, 1 + 18, false, false, want_bus1, NULL);
     CHECK(len == 19 && buf[0] == 1 && from == 2);   // the unwanted bus-0 frame is skipped on the way
-    len = ble_stream_build(b, 4, &from, buf, 1 + 18, want_bus1, NULL);
+    len = ble_stream_build(b, 4, &from, buf, 1 + 18, false, false, want_bus1, NULL);
     CHECK(len == 13 && buf[0] == 1 && from == 3);
-    len = ble_stream_build(b, 4, &from, buf, 1 + 18, want_bus1, NULL);
+    len = ble_stream_build(b, 4, &from, buf, 1 + 18, false, false, want_bus1, NULL);
     CHECK(len == 19 && buf[0] == 1 && from == 4);
 
     // A frame larger than the buffer makes no progress (the caller stops).
     from = 0;
-    len = ble_stream_build(b, 4, &from, buf, 10, NULL, NULL);
+    len = ble_stream_build(b, 4, &from, buf, 10, false, false, NULL, NULL);
     CHECK(len == 0 && from == 0);
 
     // Nothing wanted: no packet, and the batch is consumed.
     can_tagged_frame_t z[1] = { frame(0, 0x200, 8) };
     from = 0;
-    len = ble_stream_build(z, 1, &from, buf, sizeof(buf), want_bus1, NULL);
+    len = ble_stream_build(z, 1, &from, buf, sizeof(buf), false, false, want_bus1, NULL);
     CHECK(len == 0 && from == 1);
+
+    // Compact: 11-bit ids only, [0x80][id | bus << 11][len][data]; the rest pass sends the others (a diagnostic
+    // record) in the original format.
+    can_tagged_frame_t c[2] = { frame(1, 0x100, 8), frame(0x11, 0x1DA50001, 8) };
+    from = 0;
+    len = ble_stream_build(c, 2, &from, buf, sizeof(buf), true, false, NULL, NULL);
+    CHECK(buf[0] == BLE_COMPACT_MARK && len == 1 + 11 && from == 2);
+    CHECK(buf[1] == 0x00 && buf[2] == (0x01 | 1 << 3) && buf[3] == 8);
+    from = 0;
+    len = ble_stream_build(c, 2, &from, buf, sizeof(buf), false, true, NULL, NULL);
+    CHECK(buf[0] == 1 && len == 1 + 18 && buf[5] == 0x11);
 }
 
 static void primary_is_the_last_writable_subscriber(void)

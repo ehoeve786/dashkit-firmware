@@ -99,6 +99,7 @@ typedef struct {
     uint32_t connected_s;
     uint32_t sub_seq;          // global order of the last subscribe, 0 = never
     bool     read_only;        // opted out of driving the vehicle (0x4F 01); reset on reconnect
+    bool     compact;          // asked for compact CAN packets (0x52 01); reset on reconnect
 } conn_slot_t;
 
 static conn_slot_t s_conns[MAX_CONNS];
@@ -220,6 +221,7 @@ static void slot_open(conn_slot_t *slot, uint16_t handle)
     slot->connected_s = now_s();
     slot->sub_seq = 0;
     slot->read_only = false;
+    slot->compact = false;
     can_filter_open((uint8_t)(slot - s_conns));
 }
 
@@ -261,7 +263,7 @@ static void update_active(void)
     for (int k = -1; k < MAX_CONNS; k++) {
         int i = k < 0 ? p : k;
         if (i < 0 || (k >= 0 && i == p) || !cand[i].receiver) continue;
-        s_recv[w][n] = (ble_receiver_t){ s_conns[i].handle, (uint8_t)i, n == 0 };
+        s_recv[w][n] = (ble_receiver_t){ s_conns[i].handle, (uint8_t)i, n == 0, s_conns[i].compact };
         n++;
     }
     s_recv_n[w] = n;
@@ -752,10 +754,11 @@ static int gatt_control_access(uint16_t conn_handle, uint16_t attr_handle,
         return 0;
     }
 
-    // Read-only mode, per connection, accepted from read-only devices too and
-    // never queued: [0x4F][1=read-only, 0=read/write] (as in upstream PR #87;
-    // a zero high byte may follow). It resets on reconnect.
-    if (opcode == VC_CMD_BLE_READ_ONLY) {
+    // Per-connection settings, accepted from read-only devices too and never
+    // queued: read-only mode ([0x4F][1=read-only, 0=read/write], as in upstream
+    // PR #87) and compact CAN packets ([0x52][1|0]); a zero high byte may follow.
+    // Both reset on reconnect.
+    if (opcode == VC_CMD_BLE_READ_ONLY || opcode == VC_CMD_COMPACT) {
         conn_slot_t *slot = slot_by_handle(conn_handle);
         if (value > 1) {
             return BLE_ATT_ERR_INVALID_ATTR_VALUE_LEN;
@@ -763,8 +766,12 @@ static int gatt_control_access(uint16_t conn_handle, uint16_t attr_handle,
         if (!slot || !slot->encrypted) {
             return BLE_ATT_ERR_INSUFFICIENT_AUTHOR;
         }
-        slot->read_only = value != 0;
-        ESP_LOGI(TAG, "Connection %d: read_only=%d", conn_handle, slot->read_only);
+        if (opcode == VC_CMD_BLE_READ_ONLY) {
+            slot->read_only = value != 0;
+        } else {
+            slot->compact = value != 0;
+        }
+        ESP_LOGI(TAG, "Connection %d: read_only=%d compact=%d", conn_handle, slot->read_only, slot->compact);
         update_active();
         return 0;
     }

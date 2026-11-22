@@ -16,6 +16,7 @@ typedef struct {
     uint16_t conn;     // connection handle
     uint8_t  slot;     // its CAN filter slot (can_filter_wants)
     bool     primary;  // the first in the list: gets each batch first
+    bool     compact;  // it asked for compact packets (0x52 01)
 } ble_receiver_t;
 
 // The devices that get the CAN stream, primary first (see

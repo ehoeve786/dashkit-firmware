@@ -71,6 +71,53 @@ bool can_msg_fresh(const char *msg, uint32_t max_age_ms)
     return valid && esp_timer_get_time() - at <= (int64_t)max_age_ms * 1000;
 }
 
+// Arrival time of the car's last frame of `msg`, 0 if none yet.
+static int64_t arrival_us(const char *msg)
+{
+    dbc_msg_t mi = dbc_msg(msg);
+    if (mi < 0) {
+        return 0;
+    }
+    portENTER_CRITICAL(&s_cache_mux);
+    int64_t at = s_cache_valid[mi] ? s_cache_us[mi] : 0;
+    portEXIT_CRITICAL(&s_cache_mux);
+    return at;
+}
+
+// The car's frames come up to ~5% early, so its next one counts as due from
+// period/8 (at least 20 ms) before the period is up. Two periods without one:
+// the car has stopped sending it.
+static bool clear_at(int64_t now, int64_t at, uint32_t period_us)
+{
+    int64_t guard = period_us / 8 > 20000 ? period_us / 8 : 20000;
+    int64_t age = now - at;
+    return !at || age >= 2 * (int64_t)period_us || age < (int64_t)period_us - guard;
+}
+
+bool can_msg_clear(const char *msg, uint32_t period_us)
+{
+    return clear_at(esp_timer_get_time(), arrival_us(msg), period_us);
+}
+
+bool can_follow_due(const char *msg, uint32_t period_us, can_follow_t *st)
+{
+    int64_t now = esp_timer_get_time(), at = arrival_us(msg);
+    bool car = at && now - at < 2 * (int64_t)period_us;
+    bool due;
+    if (car && at != st->car_us) {
+        st->car_us = at;   // a car frame not followed yet
+        due = clear_at(now, at, period_us);
+    } else if (!st->sent_us) {
+        due = clear_at(now, at, period_us);   // first frame: no need to wait a period for the car's
+    } else {
+        due = !car && now - st->sent_us >= (int64_t)period_us;
+    }
+    if (due) {
+        st->sent_us = now;
+    }
+    return due;
+}
+
 // Copy the cached frame for message `mi`, or ESP_ERR_NOT_FOUND if none yet.
 static esp_err_t cache_get(dbc_msg_t mi, can_frame_t *out)
 {

@@ -61,7 +61,13 @@ static void battery_preheat_init(automation_t *self)
 static void battery_preheat_on_tick(automation_t *self)
 {
     (void)self;
+    // One frame after each of the car's (every 1 s), checked on the 100 ms tick.
+    static can_follow_t follow;
     if (!s_enabled) {
+        follow = (can_follow_t){ 0 };
+        return;
+    }
+    if (!can_follow_due("UI_tripPlanning", 1000000, &follow)) {
         return;
     }
 

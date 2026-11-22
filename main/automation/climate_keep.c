@@ -34,9 +34,10 @@ static const char *TAG = "climate_keep";
 // UI_hvacReqKeepClimateOn: no VAL_ table; guessed 1=Keep/2=Dog/3=Camp, unverified.
 #define HVAC_KEEP_MODE     1
 
-#define INJECT_MS      10   // 100Hz, matches the rear-fan injector on this frame
-#define TX_LOG_EVERY   200  // ~2s at 10ms
-#define SHUTOFF_REPS   20   // ~200ms burst commanding climate OFF at the deadline
+#define INJECT_MS      10   // poll; a frame goes out after each of the car's (can_follow_due)
+#define HVAC_PERIOD_US 500000   // the car sends 0x2F3 every 500 ms
+#define TX_LOG_EVERY   4    // ~2 s at one frame per car frame
+#define SHUTOFF_REPS   3    // frames commanding climate OFF at the deadline, one per car frame
 
 // Reject a snapshot older than this: only keep climate that was running as you left.
 #define SNAPSHOT_FRESH_US  (30LL * 1000 * 1000)  // 30 s
@@ -205,25 +206,31 @@ static void climate_keep_inject_task(void *arg)
     dbc_sig_t sig_power = dbc_sig(m, "UI_hvacReqUserPowerState");
     dbc_sig_t sig_keep  = dbc_sig(m, "UI_hvacReqKeepClimateOn");
     uint32_t count = 0;
+    can_follow_t follow = { 0 };
 
     while (true) {
-        if (s_active) {
+        if (!s_active) {
+            follow = (can_follow_t){ 0 };
+        } else {
             int64_t now = esp_timer_get_time();
             if (now >= s_deadline_us) {
                 // Deadline: actively command climate OFF instead of going silent,
                 // so a latched KeepClimateOn mode doesn't linger past the window.
-                for (int i = 0; i < SHUTOFF_REPS; i++) {
-                    can_frame_t f = s_snapshot;
-                    dbc_pack(f.data, sig_power, HVAC_POWER_OFF);
-                    dbc_pack(f.data, sig_keep,  HVAC_KEEP_OFF);
-                    can_frame_send(BUS, HVAC_MSG, &f);
+                for (int i = 0; i < SHUTOFF_REPS; ) {
+                    if (can_follow_due(HVAC_MSG, HVAC_PERIOD_US, &follow)) {
+                        can_frame_t f = s_snapshot;
+                        dbc_pack(f.data, sig_power, HVAC_POWER_OFF);
+                        dbc_pack(f.data, sig_keep,  HVAC_KEEP_OFF);
+                        can_frame_send(BUS, HVAC_MSG, &f);
+                        i++;
+                    }
                     vTaskDelay(pdMS_TO_TICKS(INJECT_MS));
                 }
-                ESP_LOGW(TAG, "shutoff burst sent (%d frames)", SHUTOFF_REPS);
+                ESP_LOGW(TAG, "shutoff sent (%d frames)", SHUTOFF_REPS);
                 stop_injection("keep window elapsed");
             } else if (!s_snapshot_valid) {
                 stop_injection("snapshot lost");
-            } else {
+            } else if (can_follow_due(HVAC_MSG, HVAC_PERIOD_US, &follow)) {
                 can_frame_t f = s_snapshot;
                 dbc_pack(f.data, sig_power, HVAC_POWER_ON);
                 dbc_pack(f.data, sig_keep,  HVAC_KEEP_MODE);

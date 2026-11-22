@@ -203,6 +203,45 @@ int main(void)
         CHECK(!can_msg_fresh("NoSuchMessage", 500), "unknown message should not be fresh");
     }
 
+    // 11. Following the car's frames: one send right after each, none while its next is due, our own clock while
+    //     it is silent.
+    {
+        const uint32_t P = 500 * 1000;
+        uint8_t d[3] = {0};
+        can_follow_t st = {0};
+        g_fake_time_us = 20 * 1000 * 1000;
+        set_live(0x249, 3, d);
+        CHECK(can_follow_due("SCCM_leftStalk", P, &st), "first call right after a car frame: due");
+        g_fake_time_us += 5 * 1000;
+        CHECK(!can_follow_due("SCCM_leftStalk", P, &st), "same car frame: not due again");
+        g_fake_time_us += 295 * 1000;
+        CHECK(can_msg_clear("SCCM_leftStalk", P), "300 ms after the car's frame: clear");
+        g_fake_time_us += 180 * 1000;
+        CHECK(!can_msg_clear("SCCM_leftStalk", P), "480 ms after: the car's next frame is due");
+        g_fake_time_us += 20 * 1000;
+        set_live(0x249, 3, d);
+        g_fake_time_us += 3 * 1000;
+        CHECK(can_follow_due("SCCM_leftStalk", P, &st), "after the car's next frame: due");
+        g_fake_time_us += 1000 * 1000;
+        CHECK(can_msg_clear("SCCM_leftStalk", P), "car silent for 2 periods: clear");
+        CHECK(can_follow_due("SCCM_leftStalk", P, &st), "car silent: due on our own clock");
+        g_fake_time_us += 100 * 1000;
+        CHECK(!can_follow_due("SCCM_leftStalk", P, &st), "own clock: not again within the period");
+        g_fake_time_us += 400 * 1000;
+        CHECK(can_follow_due("SCCM_leftStalk", P, &st), "own clock: due a period later");
+
+        st = (can_follow_t){0};
+        set_live(0x249, 3, d);
+        g_fake_time_us += 450 * 1000;
+        CHECK(!can_follow_due("SCCM_leftStalk", P, &st), "first call while the car's next frame is due: wait");
+        g_fake_time_us += 50 * 1000;
+        set_live(0x249, 3, d);
+        g_fake_time_us += 2 * 1000;
+        CHECK(can_follow_due("SCCM_leftStalk", P, &st), "then right after it: due");
+        can_follow_t none = {0};
+        CHECK(can_follow_due("EPBR_internalStatus", P, &none), "never seen: due at once");
+    }
+
     printf("\n%s\n", g_fail ? "TESTS FAILED" : "ALL TESTS PASSED");
     return g_fail ? 1 : 0;
 }

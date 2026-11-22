@@ -34,8 +34,9 @@ static const char *TAG = "sport_kd";
 #define THRESHOLD_MAX_PCT      95
 #define RELEASE_HYST_PCT       10
 
-#define INJECT_MS      10   // car sends every ~500ms
-#define TX_LOG_EVERY   200
+#define INJECT_MS      10   // poll; a frame goes out after each of the car's (can_follow_due)
+#define PT_PERIOD_US   500000   // the car sends 0x334 every 500 ms
+#define TX_LOG_EVERY   4
 
 #define NVS_NAMESPACE     "sport_kd"
 #define NVS_KEY_ENABLED   "en"
@@ -216,11 +217,14 @@ static void inject_task(void *arg)
     dbc_msg_t m = dbc_msg(PT_MSG);
     dbc_sig_t sig_map = dbc_sig(m, PT_SIG);
     uint32_t count = 0;
+    can_follow_t follow = { 0 };
 
     while (true) {
         if (s_active) {
             can_frame_t f;
-            if (can_frame_live(PT_BUS, PT_MSG, &f) != ESP_OK) {
+            if (!can_follow_due(PT_MSG, PT_PERIOD_US, &follow)) {
+                // not yet: right after the car's next frame
+            } else if (can_frame_live(PT_BUS, PT_MSG, &f) != ESP_OK) {
                 stop_injection("live frame lost");
             } else {
                 dbc_pack(f.data, sig_map, MAP_SPORT);
@@ -234,6 +238,7 @@ static void inject_task(void *arg)
             }
         } else {
             count = 0;
+            follow = (can_follow_t){ 0 };
         }
         vTaskDelay(pdMS_TO_TICKS(INJECT_MS));
     }

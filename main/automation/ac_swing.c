@@ -25,7 +25,8 @@ static const char *TAG = "ac_swing";
 #define X_MIN_RAW     0
 #define X_MAX_RAW     200
 #define SWEEP_MS      8000   // full intensity, one direction
-#define INJECT_MS     40     // car idles at 2Hz
+#define INJECT_MS     10     // poll; a frame goes out after each of the car's (can_follow_due)
+#define VENT_PERIOD_US 500000  // the car idles at 2 Hz
 #define BASE_STALE_US (5 * 1000 * 1000)
 #define MAX_ON_US     (30LL * 60 * 1000 * 1000)
 
@@ -254,6 +255,7 @@ static void set_active(bool active, const char *why, int64_t now)
 static void inject_task(void *arg)
 {
     (void)arg;
+    can_follow_t follow = { 0 };
     while (true) {
         const char *why = NULL;
         can_frame_t f;
@@ -279,7 +281,8 @@ static void inject_task(void *arg)
 
         if (why) {
             set_active(false, why, now);
-        } else {
+            follow = (can_follow_t){ 0 };
+        } else if (can_follow_due(VENT_MSG, VENT_PERIOD_US, &follow)) {
             set_active(true, "on, live vent frame", now);
             uint8_t x = swing_x(now - s_start_us);
             if (s_side != SIDE_PASSENGER) {

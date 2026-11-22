@@ -63,6 +63,27 @@ esp_err_t can_get(uint8_t bus, const char *msg, const char *sig, double *out, bo
 // state (gear, speed) must not trust a value the bus stopped refreshing.
 bool can_msg_fresh(const char *msg, uint32_t max_age_ms);
 
+// ---- Sending beside the car's own frames ----
+// Two nodes that start a frame with the same id at the same moment both win
+// arbitration, so neither backs off and the frames collide. The car sends each
+// of these messages at its own period (most UI ones every 500 ms); these keep
+// ours in the gap after its frame. period_us is the car's period for `msg`.
+
+// True if a frame of `msg` sent now is clear of the car's next one: the car's
+// next frame isn't due yet, or the car has stopped sending it.
+bool can_msg_clear(const char *msg, uint32_t period_us);
+
+// State of one repeating sender; zero it when the sender starts.
+typedef struct {
+    int64_t car_us;   // arrival time of the last car frame followed
+    int64_t sent_us;  // when this sender last sent, 0 = not yet
+} can_follow_t;
+
+// True when a repeating sender of `msg` should send now: once after each car
+// frame of it, at once on the first call if that is clear, and every period_us
+// on its own clock while the car sends none. Poll it well inside the period.
+bool can_follow_due(const char *msg, uint32_t period_us, can_follow_t *st);
+
 // One-shot send: zeroed frame, pack one signal (auto-writing its mux selector),
 // auto counter + checksum, transmit on `bus`. Names resolved internally.
 esp_err_t can_send(uint8_t bus, const char *msg, const char *sig, double value, bool scaling);

@@ -49,13 +49,22 @@ bool battery_preheat_enabled(void)
     return s_enabled;
 }
 
+static volatile bool s_kickdown;
+
 // Tells the app whether the injection is on, as an app-only frame (never sent on CAN): DASHKIT_status, bus 1,
-// 0x7F3, bit 0. Once a second and on every change, so the app's Preheat button matches after a reconnect, an
-// app restart or a multi-finger toggle.
+// 0x7F3, bit 0 (bit 1: sport kick-down injecting Standard). Once a second and on every change, so the app's
+// Preheat button matches after a reconnect, an app restart or a multi-finger toggle.
 static void report(void)
 {
-    can_tagged_frame_t t = { .bus_id = BUS, .frame = { .id = 0x7F3, .dlc = 1, .data = { s_enabled } } };
+    can_tagged_frame_t t = { .bus_id = BUS, .frame = { .id = 0x7F3, .dlc = 1,
+                                                       .data = { (uint8_t)(s_enabled | s_kickdown << 1) } } };
     can_manager_inject(&t);
+}
+
+void battery_preheat_report_kickdown(bool on)
+{
+    s_kickdown = on;
+    report();
 }
 
 // ---- Automation hooks ----

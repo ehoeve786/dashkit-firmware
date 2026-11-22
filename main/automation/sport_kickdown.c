@@ -2,6 +2,7 @@
 // pedal is past the threshold in Drive.
 
 #include "automation.h"
+#include "battery_preheat.h"
 #include "dbc.h"
 #include "vehicle_control.h"
 
@@ -95,6 +96,7 @@ static void stop_injection(const char *why)
         return;
     }
     s_active = false;
+    battery_preheat_report_kickdown(false);
     ESP_LOGW(TAG, "STOP injection (%s)", why);
 }
 
@@ -117,6 +119,7 @@ static void start_injection(double pedal_pct)
     dbc_counter_seed_from_bus(PT_BUS, PT_MSG);
     s_baseline = (int)map;
     s_active = true;
+    battery_preheat_report_kickdown(true);
     ESP_LOGW(TAG, "START injection: pedal %.0f%% >= %u%%, car map=%d -> SPORT @ %dms",
              pedal_pct, s_threshold_pct, s_baseline, INJECT_MS);
 }

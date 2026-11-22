@@ -66,12 +66,16 @@ static esp_err_t app_provision(const uint8_t *p)
 static int app_cmd_access(uint16_t conn_handle, uint16_t attr_handle,
                           struct ble_gatt_access_ctxt *ctxt, void *arg)
 {
-    (void)conn_handle;
     (void)attr_handle;
     (void)arg;
 
     if (ctxt->op != BLE_GATT_ACCESS_OP_WRITE_CHR) {
         return BLE_ATT_ERR_REQ_NOT_SUPPORTED;
+    }
+
+    // A read-only device (0x4F 01) may not write here.
+    if (!ble_server_can_write(conn_handle)) {
+        return BLE_ATT_ERR_INSUFFICIENT_AUTHOR;
     }
 
     uint16_t len = OS_MBUF_PKTLEN(ctxt->om);

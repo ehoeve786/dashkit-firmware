@@ -40,6 +40,7 @@ idf_component_register(
         "ble/ble_server.c"
         "ble/ble_ota.c"
         "ble/ble_appchan.c"
+        "ble/ble_stream.c"
         ${TESLA_SRCS}
         ${BTHOME_SRCS}
     INCLUDE_DIRS

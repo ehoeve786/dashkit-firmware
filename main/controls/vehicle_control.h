@@ -87,6 +87,13 @@ typedef enum {
     // Config only, not persisted. value is ignored.
     VC_CMD_AC_SWING_TOGGLE = 0x4E,
 
+    // --- BLE connection role (same as upstream PR #87) ---
+    // Handled in the BLE layer, per connection, never queued: [0x4F][1=read-only,
+    // 0=read/write] (a zero high byte may follow). A read-only device still gets
+    // its CAN stream but never becomes the active connection, so it can't drive
+    // the vehicle, use the app channel or update the firmware. Resets on reconnect.
+    VC_CMD_BLE_READ_ONLY = 0x4F,
+
     // --- Door unlatch (VCSEC_requests 0x1F9) ---
     // Pops one door latch like the Tesla app's "Unlatch Door": the per-door
     // ClosureRequest = OPEN with reason RKE, held ~800 ms at the car's own

@@ -753,7 +753,8 @@ static const struct ble_gatt_svc_def s_tx_svc_def[] = {
             {
                 .uuid = &s_tx_chr_uuid.u,
                 .access_cb = gatt_tx_access,
-                .flags = BLE_GATT_CHR_F_WRITE | BLE_GATT_CHR_F_WRITE_ENC | BLE_GATT_CHR_F_READ | BLE_GATT_CHR_F_READ_ENC,
+                .flags = BLE_GATT_CHR_F_WRITE | BLE_GATT_CHR_F_WRITE_NO_RSP | BLE_GATT_CHR_F_WRITE_ENC
+                       | BLE_GATT_CHR_F_READ | BLE_GATT_CHR_F_READ_ENC,
             },
             { 0 },
         },

@@ -1,6 +1,7 @@
 #include "can_manager.h"
 #include "can_filter.h"
 #include "can_diag.h"
+#include "host_tx.h"
 #include "automation_manager.h"
 #include "vehicle_control.h"
 #include "dbc.h"
@@ -61,12 +62,21 @@ static void route_report_cb(void *arg)
 //       (COMMA_status), bus 2 = the C3X's party bus, bus 3 = its Autopilot side. Anything else, or a line that isn't
 //       exactly one frame (a write cut short on the C3X), is dropped. No status for 2 s (C3X off or unplugged): one
 //       all-zero COMMA_status clears it, and whole buses go back to BLE.
+//
+// The same port serves the CanPilot app on a phone, plugged in instead of the C3X:
+//  in:  "L,1" once a second: send every frame of both buses ("L,0", or 2 s without it: stop).
+//       "X,1" once a second and "T,<bus>,<id>,<hex>": transmit a frame on CAN, under the rules in host_tx.h.
+//  out: the "A" lines; "D,<bus>,<id>,<hex>" for the diagnostic records of can_diag.h (bus error counters among
+//       them), which are switched on while the app is there; and once a second
+//       "H,<armed>,<sent>,<refused>,<expired>,<queue drops>,<write drops>".
 #define COMMA_ID 0x7F0
 typedef struct { uint32_t id; uint8_t bus, dlc, ext, data[8]; } c3x_frame_t;
 static QueueHandle_t    s_c3x_q = NULL;
 static volatile bool    s_c3x_up;
 static volatile bool    s_c3x_all[2];  // C3X up and a device asked for this whole bus
 static volatile uint32_t s_c3x_qdrop, s_c3x_wdrop;
+static volatile bool    s_host_all;    // the CanPilot app asked for every frame
+static volatile bool    s_host_up;     // it is there: streaming or armed to transmit
 
 static bool c3x_line(char *in, int len)
 {
@@ -92,7 +102,7 @@ static int a_line(char *o, const c3x_frame_t *f)
 {
     static const char hx[] = "0123456789abcdef";
     char *p = o;
-    *p++ = 'A'; *p++ = ','; *p++ = '0' + f->bus; *p++ = ',';
+    *p++ = f->bus & CAN_DIAG_BUS_FLAG ? 'D' : 'A'; *p++ = ','; *p++ = '0' + (f->bus & 0x0F); *p++ = ',';
     int nd = f->ext ? 8 : 3;
     for (int i = nd - 1; i >= 0; i--) p[i] = hx[(f->id >> (4 * (nd - 1 - i))) & 15];
     p += nd;
@@ -108,14 +118,20 @@ static void lanes_task(void *arg)
     c3x_frame_t f;
     char b[48], in[48];
     int il = 0;
-    int64_t last_c = 0, last_s = 0, last_a = 0;
+    int64_t last_c = 0, last_s = 0, last_a = 0, last_l = 0, last_h = 0;
+    bool diag_before = false;
     for (;;) {
         int r;
         while ((r = usb_serial_jtag_read_bytes(b, sizeof(b), 0)) > 0) {
             for (int i = 0; i < r; i++) {
                 if (b[i] != '\n') { if (il < (int)sizeof(in) - 1) in[il++] = b[i]; continue; }
                 in[il] = 0;
-                if (c3x_line(in, il)) { last_c = esp_timer_get_time(); s_c3x_up = true; }
+                uint32_t line_ms = (uint32_t)(esp_timer_get_time() / 1000);
+                if (il && in[il - 1] == '\r') in[--il] = 0;
+                if (!strcmp(in, "L,1")) last_l = esp_timer_get_time();
+                else if (!strcmp(in, "L,0")) last_l = 0;
+                else if (host_tx_line(in, line_ms)) { }
+                else if (c3x_line(in, il)) { last_c = esp_timer_get_time(); s_c3x_up = true; }
                 il = 0;
             }
         }
@@ -128,12 +144,28 @@ static void lanes_task(void *arg)
         }
         if (now - last_a >= 100000) {  // can_filter_all takes the filter lock: sampled, not per frame
             last_a = now;
-            for (uint8_t bus = 0; bus < 2; bus++) s_c3x_all[bus] = s_c3x_up && can_filter_all(bus);
+            s_host_all = last_l && now - last_l < 2000000;
+            for (uint8_t bus = 0; bus < 2; bus++) s_c3x_all[bus] = s_host_all || (s_c3x_up && can_filter_all(bus));
+            // The app is there: it also gets the diagnostic records, as "D" lines.
+            bool up = s_host_all || host_tx_armed((uint32_t)(now / 1000));
+            if (up && !s_host_up) { diag_before = can_diag_enabled(); can_diag_set_enabled(true); }
+            if (!up && s_host_up) can_diag_set_enabled(diag_before);
+            s_host_up = up;
         }
+        // Frames the app asked to have transmitted, each at a moment that is safe for it.
+        uint8_t tx_bus;
+        can_frame_t tx_frame;
+        while (host_tx_due((uint32_t)(now / 1000), &tx_bus, &tx_frame)) host_tx_result(can_manager_send(tx_bus, &tx_frame) == ESP_OK);
         int n = 0, lines = 0;
         if (s_c3x_up && now - last_s >= 1000000) {
             last_s = now;
             n = snprintf(out, sizeof(out), "S,%lu,%lu\n", (unsigned long)s_c3x_qdrop, (unsigned long)s_c3x_wdrop);
+        }
+        if (s_host_up && now - last_h >= 1000000) {
+            last_h = now;
+            const host_tx_stats_t *tx = host_tx_stats();
+            n += snprintf(out + n, sizeof(out) - n, "H,%d,%lu,%lu,%lu,%lu,%lu\n", host_tx_armed((uint32_t)(now / 1000)), (unsigned long)tx->sent,
+                          (unsigned long)tx->refused, (unsigned long)tx->expired, (unsigned long)s_c3x_qdrop, (unsigned long)s_c3x_wdrop);
         }
         // 10 ms wait when idle: ~350 C3X lines/s come in
         if (xQueueReceive(s_c3x_q, &f, n ? 0 : pdMS_TO_TICKS(10)) == pdTRUE) {
@@ -173,6 +205,7 @@ static void on_frame_received(const can_tagged_frame_t *frame, void *user_ctx)
     // The controllers deliver every frame on the bus. The firmware's own work is only for the ids in
     // dbc/used_messages.txt, the same frames the hardware filters let through before; the rest of the bus
     // skips straight to the app's filter, so it costs two bit lookups per frame.
+    if (!frame->frame.extended) host_tx_saw(frame->bus_id, frame->frame.id, (uint32_t)(esp_timer_get_time() / 1000));
     if (!frame->frame.extended && can_filter_is_used(frame->bus_id, frame->frame.id)) {
         s_used++;
         // Feed the DBC value cache first so automation on_frame handlers (which read
@@ -278,6 +311,7 @@ esp_err_t can_manager_send(uint8_t bus_id, const can_frame_t *frame)
 esp_err_t can_manager_inject_unfiltered(const can_tagged_frame_t *frame)
 {
     if (!s_rx_queue) return ESP_ERR_INVALID_STATE;
+    if (s_host_up && (frame->bus_id & CAN_DIAG_BUS_FLAG)) c3x_queue(frame);   // diagnostic records, to the CanPilot app too
     can_tagged_frame_t stamped = *frame;
     stamped.timestamp_us = (uint32_t)esp_timer_get_time();
     return xQueueSend(s_rx_queue, &stamped, 0) == pdTRUE ? ESP_OK : ESP_ERR_NO_MEM;

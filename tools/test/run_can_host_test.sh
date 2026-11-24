@@ -3,6 +3,7 @@
 #   test_dbc         the DBC signal engine
 #   test_can_stream  the MCP251xFD receive/transmit core against a model of the chip
 #   test_can_filter  the app CAN filter against the generated manifest tables
+#   test_host_tx     the rules for frames a USB host asks to have transmitted
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -42,6 +43,13 @@ cc -std=gnu11 -Wall -Wextra -Werror -Wno-unused-variable "${SAN[@]}" "${INC[@]}"
    "${REPO_ROOT}/main/can/dbc/dbc_generated.c" \
    -o "${OUT}/test_can_filter"
 "${OUT}/test_can_filter"
+
+echo "==> Transmit for a USB host"
+cc -std=gnu11 -Wall -Wextra -Werror "${SAN[@]}" "${INC[@]}" \
+   "${SCRIPT_DIR}/test_host_tx.c" \
+   "${REPO_ROOT}/main/can/host_tx.c" \
+   -o "${OUT}/test_host_tx"
+"${OUT}/test_host_tx"
 
 echo "==> CAN stream to several devices"
 cc -std=gnu11 -Wall -Wextra -Werror "${SAN[@]}" "${INC[@]}" -I "${REPO_ROOT}/main/ble" \

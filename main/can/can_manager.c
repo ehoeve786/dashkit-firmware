@@ -63,7 +63,8 @@ static void route_report_cb(void *arg)
 //       exactly one frame (a write cut short on the C3X), is dropped. No status for 2 s (C3X off or unplugged): one
 //       all-zero COMMA_status clears it, and whole buses go back to BLE.
 //
-// The same port serves the CanPilot app on a phone, plugged in instead of the C3X:
+// The same port serves the CanPilot app on a phone, plugged in instead of the C3X (its transmit lines can also
+// come over BLE, see can_manager_host_line; then the C3X stays on this port and sees none of the "H" and "D" lines):
 //  in:  "L,1" once a second: send every frame of both buses ("L,0", or 2 s without it: stop).
 //       "X,1" once a second and "T,<bus>,<id>,<hex>": transmit a frame on CAN, under the rules in host_tx.h.
 //  out: the "A" lines; "D,<bus>,<id>,<hex>" for the diagnostic records of can_diag.h (bus error counters among
@@ -77,6 +78,12 @@ static volatile bool    s_c3x_all[2];  // C3X up and a device asked for this who
 static volatile uint32_t s_c3x_qdrop, s_c3x_wdrop;
 static volatile bool    s_host_all;    // the CanPilot app asked for every frame
 static volatile bool    s_host_up;     // it is there: streaming or armed to transmit
+static volatile bool    s_host_usb;    // it is on the USB port: the "H" and "D" lines go there
+static volatile bool    s_host_armed;
+typedef struct { char text[32]; } host_line_t;
+static QueueHandle_t    s_host_line_q; // transmit lines from BLE, for the lanes task
+static volatile uint8_t s_bus_err[2][3];   // TEC, REC, flags of the last CAN_DIAG_ID_BUS_ERR record
+static volatile bool    s_bus_err_seen[2];
 
 static bool c3x_line(char *in, int len)
 {
@@ -118,7 +125,8 @@ static void lanes_task(void *arg)
     c3x_frame_t f;
     char b[48], in[48];
     int il = 0;
-    int64_t last_c = 0, last_s = 0, last_a = 0, last_l = 0, last_h = 0;
+    int64_t last_c = 0, last_s = 0, last_a = 0, last_l = 0, last_h = 0, last_u = 0;
+    host_line_t ble_line;
     bool diag_before = false;
     for (;;) {
         int r;
@@ -128,9 +136,9 @@ static void lanes_task(void *arg)
                 in[il] = 0;
                 uint32_t line_ms = (uint32_t)(esp_timer_get_time() / 1000);
                 if (il && in[il - 1] == '\r') in[--il] = 0;
-                if (!strcmp(in, "L,1")) last_l = esp_timer_get_time();
+                if (!strcmp(in, "L,1")) last_u = last_l = esp_timer_get_time();
                 else if (!strcmp(in, "L,0")) last_l = 0;
-                else if (host_tx_line(in, line_ms)) { }
+                else if (host_tx_line(in, line_ms)) last_u = esp_timer_get_time();
                 else if (c3x_line(in, il)) { last_c = esp_timer_get_time(); s_c3x_up = true; }
                 il = 0;
             }
@@ -147,11 +155,14 @@ static void lanes_task(void *arg)
             s_host_all = last_l && now - last_l < 2000000;
             for (uint8_t bus = 0; bus < 2; bus++) s_c3x_all[bus] = s_host_all || (s_c3x_up && can_filter_all(bus));
             // The app is there: it also gets the diagnostic records, as "D" lines.
-            bool up = s_host_all || host_tx_armed((uint32_t)(now / 1000));
+            s_host_armed = host_tx_armed((uint32_t)(now / 1000));
+            s_host_usb = last_u && now - last_u < 2000000;
+            bool up = s_host_all || s_host_armed;
             if (up && !s_host_up) { diag_before = can_diag_enabled(); can_diag_set_enabled(true); }
             if (!up && s_host_up) can_diag_set_enabled(diag_before);
             s_host_up = up;
         }
+        while (xQueueReceive(s_host_line_q, &ble_line, 0) == pdTRUE) host_tx_line(ble_line.text, (uint32_t)(now / 1000));
         // Frames the app asked to have transmitted, each at a moment that is safe for it.
         uint8_t tx_bus;
         can_frame_t tx_frame;
@@ -161,7 +172,7 @@ static void lanes_task(void *arg)
             last_s = now;
             n = snprintf(out, sizeof(out), "S,%lu,%lu\n", (unsigned long)s_c3x_qdrop, (unsigned long)s_c3x_wdrop);
         }
-        if (s_host_up && now - last_h >= 1000000) {
+        if (s_host_usb && now - last_h >= 1000000) {
             last_h = now;
             const host_tx_stats_t *tx = host_tx_stats();
             n += snprintf(out + n, sizeof(out) - n, "H,%d,%lu,%lu,%lu,%lu,%lu\n", host_tx_armed((uint32_t)(now / 1000)), (unsigned long)tx->sent,
@@ -238,7 +249,8 @@ esp_err_t can_manager_init(void)
     }
     usb_serial_jtag_driver_config_t usj = { .tx_buffer_size = 8192, .rx_buffer_size = 4096 };
     s_c3x_q = xQueueCreate(512, sizeof(c3x_frame_t));
-    if (!s_c3x_q || usb_serial_jtag_driver_install(&usj) != ESP_OK || xTaskCreate(lanes_task, "lanes", 3072, NULL, 1, NULL) != pdPASS) {
+    s_host_line_q = xQueueCreate(16, sizeof(host_line_t));
+    if (!s_c3x_q || !s_host_line_q || usb_serial_jtag_driver_install(&usj) != ESP_OK || xTaskCreate(lanes_task, "lanes", 3072, NULL, 1, NULL) != pdPASS) {
         return ESP_ERR_NO_MEM;
     }
     s_iface_count = 0;
@@ -311,7 +323,12 @@ esp_err_t can_manager_send(uint8_t bus_id, const can_frame_t *frame)
 esp_err_t can_manager_inject_unfiltered(const can_tagged_frame_t *frame)
 {
     if (!s_rx_queue) return ESP_ERR_INVALID_STATE;
-    if (s_host_up && (frame->bus_id & CAN_DIAG_BUS_FLAG)) c3x_queue(frame);   // diagnostic records, to the CanPilot app too
+    if (frame->frame.id == CAN_DIAG_ID_BUS_ERR && (frame->bus_id & 0x0F) < 2) {
+        uint8_t bus = frame->bus_id & 0x0F;
+        for (int i = 0; i < 3; i++) s_bus_err[bus][i] = frame->frame.data[i];
+        s_bus_err_seen[bus] = true;
+    }
+    if (s_host_usb && (frame->bus_id & CAN_DIAG_BUS_FLAG)) c3x_queue(frame);   // diagnostic records, to the CanPilot app on USB too
     can_tagged_frame_t stamped = *frame;
     stamped.timestamp_us = (uint32_t)esp_timer_get_time();
     return xQueueSend(s_rx_queue, &stamped, 0) == pdTRUE ? ESP_OK : ESP_ERR_NO_MEM;
@@ -329,4 +346,25 @@ esp_err_t can_manager_inject(const can_tagged_frame_t *frame)
         return ESP_OK;
     }
     return ESP_ERR_NO_MEM;
+}
+
+bool can_manager_host_line(const char *line)
+{
+    host_line_t l;
+    size_t len = strlen(line);
+    if (!s_host_line_q || len >= sizeof(l.text) || (line[0] != 'X' && line[0] != 'T') || line[1] != ',') return false;
+    memcpy(l.text, line, len + 1);
+    return xQueueSend(s_host_line_q, &l, 0) == pdTRUE;
+}
+
+int can_manager_host_status(char *out, size_t size)
+{
+    const host_tx_stats_t *tx = host_tx_stats();
+    int n = snprintf(out, size, "H,%d,%lu,%lu,%lu", s_host_armed, (unsigned long)tx->sent, (unsigned long)tx->refused, (unsigned long)tx->expired);
+    for (int bus = 0; bus < 2 && n > 0 && (size_t)n < size; bus++) {
+        if (!s_bus_err_seen[bus]) continue;
+        n += snprintf(out + n, size - n, "\nD,%d,%08lx,%02x%02x%02x", bus, (unsigned long)CAN_DIAG_ID_BUS_ERR,
+                      s_bus_err[bus][0], s_bus_err[bus][1], s_bus_err[bus][2]);
+    }
+    return n < 0 ? 0 : (size_t)n < size ? n : (int)size - 1;
 }

@@ -53,7 +53,8 @@ static void route_report_cb(void *arg)
 
 // USB serial link with the comma 3X (USB-Serial-JTAG driver, not the log console: its no-driver path can wedge
 // for good when the host drops mid-line). Writes never block; a line that doesn't fit is dropped whole.
-//  out: "A,<bus>,<id>,<hex>" (id: 3 hex digits, 8 if extended), batched:
+//  out: "A,<bus>,<id>,<hex>" (id: 3 hex digits, 8 if extended), batched; while the C3X is not up, the app's get
+//       ",<µs since boot, 8 hex digits>" added: when the frame came off the bus.
 //       - always: the chassis-bus (0) frames the C3X can't see: DAS_lanes 0x239, DAS_carLog 0x5D9,
 //         DAS_autopilotDebug 0x247, UI_gpsVehicleSpeed 0x2F8, APP_frontParkAssistData 0x34B (~35 frames/s);
 //       - while the app takes a whole bus ("Log every frame") and the C3X is up: every frame of that bus (0 and 1),
@@ -74,7 +75,7 @@ static void route_report_cb(void *arg)
 //       them), which are switched on while the app is there; and once a second
 //       "H,<armed>,<sent>,<refused>,<expired>,<queue drops>,<write drops>".
 #define COMMA_ID 0x7F0
-typedef struct { uint32_t id; uint8_t bus, dlc, ext, data[8]; } c3x_frame_t;
+typedef struct { uint32_t id, time; uint8_t bus, dlc, ext, data[8]; } c3x_frame_t;
 static QueueHandle_t    s_c3x_q = NULL;
 static volatile bool    s_c3x_up;
 static volatile bool    s_c3x_all[2];  // C3X up and a device asked for this whole bus
@@ -121,6 +122,12 @@ static int a_line(char *o, const c3x_frame_t *f)
     p += nd;
     *p++ = ',';
     for (int i = 0; i < f->dlc; i++) { *p++ = hx[f->data[i] >> 4]; *p++ = hx[f->data[i] & 15]; }
+    // The app's frames carry the time they came off the bus (µs since boot, 32 bits, hex), so network delays
+    // don't move them. Not while the C3X is up: its reader takes exactly the fields above.
+    if (!(f->bus & CAN_DIAG_BUS_FLAG) && !s_c3x_up) {
+        *p++ = ',';
+        for (int i = 7; i >= 0; i--) *p++ = hx[(f->time >> (4 * i)) & 15];
+    }
     *p++ = '\n';
     return p - o;
 }
@@ -192,7 +199,7 @@ static void lanes_task(void *arg)
         // 10 ms wait when idle: ~350 C3X lines/s come in
         if (xQueueReceive(s_c3x_q, &f, n ? 0 : pdMS_TO_TICKS(10)) == pdTRUE) {
             do { n += a_line(out + n, &f); lines++; }
-            while (n < (int)sizeof(out) - 32 && xQueueReceive(s_c3x_q, &f, 0) == pdTRUE);
+            while (n < (int)sizeof(out) - 48 && xQueueReceive(s_c3x_q, &f, 0) == pdTRUE);
         }
         // USB as before, unless only the Wi-Fi app wants the lines (nobody would read them there)
         if (n && (s_c3x_up || s_host_usb || !s_host_wifi) && usb_serial_jtag_write_bytes(out, n, 0) != n) s_c3x_wdrop += lines;
@@ -202,7 +209,7 @@ static void lanes_task(void *arg)
 
 static void c3x_queue(const can_tagged_frame_t *t)
 {
-    c3x_frame_t f = { .id = t->frame.id, .bus = t->bus_id, .dlc = t->frame.dlc > 8 ? 8 : t->frame.dlc,
+    c3x_frame_t f = { .id = t->frame.id, .time = (uint32_t)esp_timer_get_time(), .bus = t->bus_id, .dlc = t->frame.dlc > 8 ? 8 : t->frame.dlc,
                       .ext = t->frame.extended };
     memcpy(f.data, t->frame.data, f.dlc);
     if (xQueueSend(s_c3x_q, &f, 0) != pdTRUE) s_c3x_qdrop++;

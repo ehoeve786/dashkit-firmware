@@ -7,7 +7,7 @@
 // the network are kept in NVS. Nothing is sent before the client's first line.
 //  in:  "L,1" once a second: every frame of both buses ("L,0", or 2 s without it: stop). Nothing else: transmitting
 //       stays on USB and BLE, which a stranger on the network can't reach.
-//  out: while asked, the lines the USB port's app gets ("A", "D", "H", see can_manager.c); always:
+//  out: while asked, the lines the USB port's app gets ("A" with its bus time, "D", "H", see can_manager.c); always:
 //       "G,<line>" the firmware log (the last ~32 KB of it from before the client came, then as it is written),
 //       once a second "M,..." metrics (can_manager_metrics), then ",<RSSI dBm>,<free heap KB>".
 #define WIFI_LINK_PORT 62402

@@ -31,16 +31,21 @@ jobs:
         id: cache-idf
         uses: actions/cache@v4
         with:
+          # without the downloaded installers, the examples and the docs: a smaller cache restores faster
           path: |
             esp-idf
             .git/modules/esp-idf
             ~/.espressif
-          key: idf-${{ runner.os }}-${{ steps.keys.outputs.idf }}-${{ steps.keys.outputs.py }}
+            !~/.espressif/dist
+            !esp-idf/examples
+            !esp-idf/docs
+          key: idf-v2-${{ runner.os }}-${{ steps.keys.outputs.idf }}-${{ steps.keys.outputs.py }}
 
       - name: Fetch ESP-IDF and install toolchain
         if: steps.cache-idf.outputs.cache-hit != 'true'
         run: |
-          git submodule update --init --recursive
+          # only the pinned commits, not the history: the cache stays small
+          git submodule update --init --recursive --depth 1 --jobs 8
           ./esp-idf/install.sh esp32s3
 
       # Compiler cache: makes the compile step itself fast on repeat builds.
@@ -53,7 +58,8 @@ jobs:
           restore-keys: ccache-${{ runner.os }}-
 
       - name: Install ccache
-        run: sudo apt-get update -qq && sudo apt-get install -y ccache
+        # the runner's package lists are fresh enough for ccache: no apt-get update
+        run: sudo apt-get install -y --no-install-recommends ccache || (sudo apt-get update -qq && sudo apt-get install -y ccache)
 
       - name: Build
         env:

@@ -27,6 +27,7 @@ static TaskHandle_t     s_control;   // applies on/off: Wi-Fi start-up is too he
 static volatile bool    s_on, s_client;
 static esp_netif_t     *s_netif;
 static char             s_ssid[33], s_pass[65];
+static volatile int     s_reason;    // why it isn't on the network: the last disconnect reason (wifi_err_reason_t), -1 start failed, 0 none
 
 static int log_hook(const char *fmt, va_list args)
 {
@@ -161,9 +162,13 @@ static void on_event(void *arg, esp_event_base_t base, int32_t id, void *data)
 {
     (void)arg;
     if (base == WIFI_EVENT && (id == WIFI_EVENT_STA_START || id == WIFI_EVENT_STA_DISCONNECTED) && s_on) {
-        if (id == WIFI_EVENT_STA_DISCONNECTED) vTaskDelay(pdMS_TO_TICKS(2000));  // the hotspot is off: don't spin
+        if (id == WIFI_EVENT_STA_DISCONNECTED) {
+            s_reason = ((wifi_event_sta_disconnected_t *)data)->reason;
+            vTaskDelay(pdMS_TO_TICKS(2000));  // the hotspot is off: don't spin
+        }
         esp_wifi_connect();
     } else if (base == IP_EVENT && id == IP_EVENT_STA_GOT_IP) {
+        s_reason = 0;
         ESP_LOGI(TAG, "on %s as " IPSTR ", port %d", s_ssid, IP2STR(&((ip_event_got_ip_t *)data)->ip_info.ip), WIFI_LINK_PORT);
     }
 }
@@ -192,6 +197,7 @@ static void apply(bool on)
             esp_event_handler_register(IP_EVENT, IP_EVENT_STA_GOT_IP, on_event, NULL) != ESP_OK ||
             xTaskCreatePinnedToCore(server_task, "wifi_link", 4096, NULL, 2, NULL, 0) != pdPASS) {
             ESP_LOGE(TAG, "Wi-Fi start failed");
+            s_reason = -1;
             return;
         }
     }
@@ -205,7 +211,7 @@ static void apply(bool on)
     memcpy(config.sta.password, s_pass, strlen(s_pass));
     config.sta.threshold.authmode = s_pass[0] ? WIFI_AUTH_WPA2_PSK : WIFI_AUTH_OPEN;
     config.sta.sae_pwe_h2e = WPA3_SAE_PWE_BOTH;  // WPA3-only hotspots too
-    if (esp_wifi_set_config(WIFI_IF_STA, &config) != ESP_OK || esp_wifi_start() != ESP_OK) ESP_LOGE(TAG, "can't join %s", s_ssid);
+    if (esp_wifi_set_config(WIFI_IF_STA, &config) != ESP_OK || esp_wifi_start() != ESP_OK) { ESP_LOGE(TAG, "can't join %s", s_ssid); s_reason = -1; }
     else ESP_LOGI(TAG, "joining %s", s_ssid);
 }
 
@@ -253,6 +259,6 @@ int wifi_link_status(char *out, size_t size)
 {
     esp_netif_ip_info_t ip = { 0 };
     if (s_netif && s_on) esp_netif_get_ip_info(s_netif, &ip);
-    int n = snprintf(out, size, "W,%d," IPSTR, s_on, IP2STR(&ip.ip));
+    int n = snprintf(out, size, "W,%d," IPSTR ",%d,%u", s_on, IP2STR(&ip.ip), s_reason, (unsigned)(esp_get_free_heap_size() / 1024));
     return n < 0 ? 0 : (size_t)n < size ? n : (int)size - 1;
 }

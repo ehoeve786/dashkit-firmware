@@ -729,9 +729,9 @@ static int gatt_tx_access(uint16_t conn_handle, uint16_t attr_handle,
     (void)attr_handle;
     (void)arg;
 
-    char text[96];
+    char text[128];
     if (ctxt->op == BLE_GATT_ACCESS_OP_READ_CHR) {
-        int len = can_manager_host_status(text, sizeof(text) - 24);
+        int len = can_manager_host_status(text, sizeof(text) - 40);
         text[len++] = '\n';
         len += wifi_link_status(text + len, sizeof(text) - len);
         return os_mbuf_append(ctxt->om, text, len) == 0 ? 0 : BLE_ATT_ERR_INSUFFICIENT_RES;

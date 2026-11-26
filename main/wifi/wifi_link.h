@@ -19,7 +19,7 @@ void wifi_link_init(void);
 // next "W,1"). False if it isn't one.
 bool wifi_link_command(const char *line);
 
-// "W,<on>,<ip or 0>" for the BLE status read. Returns the length.
+// "W,<on>,<ip or 0.0.0.0>,<why not on: last disconnect reason, -1 start failed, 0 none>,<free heap KB>" for the BLE status read. Returns the length.
 int wifi_link_status(char *out, size_t size);
 
 // Queues whole lines for the client; false (nothing queued) if there is no room. Never blocks.

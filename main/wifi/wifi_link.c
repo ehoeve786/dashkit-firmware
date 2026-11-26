@@ -2,6 +2,8 @@
 #include "can_manager.h"
 #include "ble_server.h"
 #include "esp_event.h"
+#include "esp_efuse.h"
+#include "esp_efuse_table.h"
 #include "esp_heap_caps.h"
 #include "esp_log.h"
 #include "esp_system.h"
@@ -254,6 +256,13 @@ static void on_event(void *arg, esp_event_base_t base, int32_t id, void *data)
     } else if (base == IP_EVENT && id == IP_EVENT_STA_GOT_IP) {
         s_reason = 0;
         ESP_LOGI(TAG, "on %s as " IPSTR ", port %d", s_ssid, IP2STR(&((ip_event_got_ip_t *)data)->ip_info.ip), WIFI_LINK_PORT);
+        // the chip's eFuses (esptool's meaning): PSRAM in its package (cap 0 none, 1 8 MB, 2 2 MB) and its flash
+        uint8_t psram = 0, vendor = 0, flash = 0, package = 0;
+        esp_efuse_read_field_blob(ESP_EFUSE_PSRAM_CAP, &psram, esp_efuse_get_field_size(ESP_EFUSE_PSRAM_CAP));
+        esp_efuse_read_field_blob(ESP_EFUSE_PSRAM_VENDOR, &vendor, esp_efuse_get_field_size(ESP_EFUSE_PSRAM_VENDOR));
+        esp_efuse_read_field_blob(ESP_EFUSE_FLASH_CAP, &flash, esp_efuse_get_field_size(ESP_EFUSE_FLASH_CAP));
+        esp_efuse_read_field_blob(ESP_EFUSE_PKG_VERSION, &package, esp_efuse_get_field_size(ESP_EFUSE_PKG_VERSION));
+        ESP_LOGI(TAG, "chip: PSRAM cap %u vendor %u, flash cap %u, package %u", psram, vendor, flash, package);
     }
 }
 

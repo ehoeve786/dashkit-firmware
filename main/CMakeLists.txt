@@ -66,6 +66,7 @@ idf_component_register(
         bt
         esp_timer
         app_update
+        efuse
         esp_wifi
         esp_netif
         esp_event

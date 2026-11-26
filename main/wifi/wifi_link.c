@@ -129,7 +129,7 @@ static void serve(int sock)
     static char datagram[1472];   // the most a UDP datagram carries unsplit
     char b[64], in[96], line[192];
     int il = 0, udp = -1;
-    uint32_t sequence = 0, unsent = 0, unsent_told = 0;
+    uint32_t sequence = 0, unsent_memory = 0, unsent_buffer = 0, unsent_told = 0;
     struct sockaddr_in to = { 0 };
     socklen_t to_size = sizeof(to);
     int64_t last_m = 0;
@@ -165,14 +165,18 @@ static void serve(int sock)
                 // HEAP_KEPT free it isn't sent: BLE needs that memory more (a gap the app counts)
                 uint32_t number = sequence++;
                 // Wi-Fi's few transmit buffers fill (BLE shares the radio): wait for one, up to 20 ms, rather than drop
-                bool sent = false;
-                if (udp >= 0 && size + 4 <= sizeof(datagram) && esp_get_free_heap_size() >= HEAP_KEPT) {
+                // up to 50 ms for both (the ring holds ~150 ms of frames): BLE frees memory, Wi-Fi a buffer
+                bool sent = false, low = false;
+                if (udp >= 0 && size + 4 <= sizeof(datagram)) {
                     datagram[0] = 'B';
                     memcpy(datagram + 1, &number, 4);
                     memcpy(datagram + 5, item + 1, size - 1);
-                    for (int tries = 0; !(sent = sendto(udp, datagram, size + 4, 0, (struct sockaddr *)&to, sizeof(to)) >= 0) && (errno == ENOMEM || errno == ENOBUFS) && tries < 20; tries++) vTaskDelay(1);
+                    for (int tries = 0; tries < 50; tries++, vTaskDelay(1)) {
+                        if ((low = esp_get_free_heap_size() < HEAP_KEPT)) continue;
+                        if ((sent = sendto(udp, datagram, size + 4, 0, (struct sockaddr *)&to, sizeof(to)) >= 0) || (errno != ENOMEM && errno != ENOBUFS)) break;
+                    }
                 }
-                if (!sent) unsent++;
+                if (!sent) { if (low) unsent_memory++; else unsent_buffer++; }
             } else ok = send_all(sock, item, size);
             vRingbufferReturnItem(s_ring, item);
         }
@@ -185,7 +189,10 @@ static void serve(int sock)
             const esp_app_desc_t *app = esp_app_get_description();
             n += snprintf(line + n, sizeof(line) - n, ",%d,%u\nV,%s %s\n", rssi, (unsigned)(esp_get_free_heap_size() / 1024), app->date, app->time);
             ok = send_all(sock, line, n);
-            if (unsent != unsent_told) ESP_LOGW(TAG, "%lu datagrams not sent (no memory or transmit buffer)", (unsigned long)(unsent_told = unsent));
+            if (unsent_memory + unsent_buffer != unsent_told) {
+                unsent_told = unsent_memory + unsent_buffer;
+                ESP_LOGW(TAG, "datagrams not sent: %lu for memory, %lu for a transmit buffer", (unsigned long)unsent_memory, (unsigned long)unsent_buffer);
+            }
         }
         if (!ok) break;
     }

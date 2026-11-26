@@ -219,7 +219,8 @@ static void apply(bool on)
     wifi_config_t config = { 0 };
     memcpy(config.sta.ssid, s_ssid, strlen(s_ssid));
     memcpy(config.sta.password, s_pass, strlen(s_pass));
-    config.sta.threshold.authmode = s_pass[0] ? WIFI_AUTH_WPA2_PSK : WIFI_AUTH_OPEN;
+    // No minimum security: the name and password pick the network (a Samsung dual-band hotspot's 2.4 GHz side
+    // isn't found with a WPA2 threshold; the earlier discovery firmware joined it without one)
     config.sta.sae_pwe_h2e = WPA3_SAE_PWE_BOTH;  // WPA3-only hotspots too
     if (esp_wifi_set_config(WIFI_IF_STA, &config) != ESP_OK || esp_wifi_start() != ESP_OK) { ESP_LOGE(TAG, "can't join %s", s_ssid); s_reason = -1; }
     else ESP_LOGI(TAG, "joining %s", s_ssid);

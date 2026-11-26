@@ -76,8 +76,9 @@ CONFIG_ESP_WIFI_IRAM_OPT=n
 CONFIG_ESP_WIFI_EXTRA_IRAM_OPT=n
 CONFIG_ESP_WIFI_RX_IRAM_OPT=n
 CONFIG_LWIP_IRAM_OPTIMIZATION=n
-# Fewer Wi-Fi receive buffers (the link mostly sends; 79 KB is free with BLE up): ~10 KB less at Wi-Fi start
-CONFIG_ESP_WIFI_STATIC_RX_BUFFER_NUM=4
+# Fewer Wi-Fi receive buffers (the link mostly sends; 79 KB is free with BLE up): ~6 KB less at Wi-Fi start.
+# 4 missed the hotspot's beacons while scanning beside BLE.
+CONFIG_ESP_WIFI_STATIC_RX_BUFFER_NUM=6
 CONFIG_ESP_WIFI_DYNAMIC_RX_BUFFER_NUM=16
 CONFIG_ESP_WIFI_AMPDU_RX_ENABLED=n
 

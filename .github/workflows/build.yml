@@ -62,6 +62,7 @@ jobs:
         run: |
           . ./esp-idf/export.sh
           idf.py build
+          idf.py size
           ccache -s
 
       - name: Upload firmware binary

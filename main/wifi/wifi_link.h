@@ -4,7 +4,7 @@
 
 // Optional Wi-Fi link to the CANLens app, for when nothing is on the USB port: the DashKit joins a network (the
 // phone's hotspot) and serves one TCP client on port WIFI_LINK_PORT. Off until switched on over BLE; the choice and
-// the network are kept in NVS.
+// the network are kept in NVS. Nothing is sent before the client's first line.
 //  in:  "L,1" once a second: every frame of both buses ("L,0", or 2 s without it: stop). Nothing else: transmitting
 //       stays on USB and BLE, which a stranger on the network can't reach.
 //  out: while asked, the lines the USB port's app gets ("A", "D", "H", see can_manager.c); always:

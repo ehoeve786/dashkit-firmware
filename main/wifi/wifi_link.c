@@ -72,13 +72,30 @@ static bool send_all(int sock, const char *data, size_t len)
     return true;
 }
 
+// Frames left from a client that went would reach the next one with new times: only the log stays.
+static void drop_frames(void)
+{
+    static char keep[LOG_MAX + 3];
+    UBaseType_t waiting = 0;
+    vRingbufferGetInfo(s_ring, NULL, NULL, NULL, NULL, &waiting);
+    while (waiting--) {
+        size_t size;
+        char *item = xRingbufferReceive(s_ring, &size, 0);
+        if (!item) break;
+        bool log = item[0] == 'G' && size <= sizeof(keep);
+        if (log) memcpy(keep, item, size);
+        vRingbufferReturnItem(s_ring, item);
+        if (log) xRingbufferSend(s_ring, keep, size, 0);
+    }
+}
+
 // One client at a time: its "L" lines in, the ring and the metrics out, until it goes or Wi-Fi is switched off.
 static void serve(int sock)
 {
     char b[64], in[16], line[192];
     int il = 0;
     int64_t last_m = 0;
-    s_client = true;
+    bool asked = false;  // nothing goes out before the client's first line: a connection that only looks takes no log
     while (s_on) {
         fd_set readable;
         FD_ZERO(&readable);
@@ -89,13 +106,14 @@ static void serve(int sock)
             int r = recv(sock, b, sizeof(b), 0);
             if (r <= 0) break;
             for (int i = 0; i < r; i++) {
-                if (b[i] == '\n') { in[il] = 0; if (il && in[il - 1] == '\r') in[il - 1] = 0; can_manager_wifi_line(in); il = 0; }
+                if (b[i] == '\n') { in[il] = 0; if (il && in[il - 1] == '\r') in[il - 1] = 0; can_manager_wifi_line(in); il = 0; s_client = asked = true; }
                 else if (il < (int)sizeof(in) - 1) in[il++] = b[i];
             }
         }
         size_t size;
         char *item;
         bool ok = true;
+        if (!asked) continue;
         while (ok && (item = xRingbufferReceive(s_ring, &size, 0))) {
             ok = send_all(sock, item, size);
             vRingbufferReturnItem(s_ring, item);
@@ -112,6 +130,8 @@ static void serve(int sock)
         if (!ok) break;
     }
     s_client = false;
+    vTaskDelay(pdMS_TO_TICKS(20));  // a batch the lanes task was queuing as the client went
+    drop_frames();
 }
 
 static void server_task(void *arg)
@@ -202,7 +222,7 @@ static void control_task(void *arg)
 void wifi_link_init(void)
 {
     s_ring = xRingbufferCreate(RING_BYTES, RINGBUF_TYPE_NOSPLIT);
-    if (s_ring) s_console = esp_log_set_vprintf(log_hook);
+    if (s_ring) esp_log_set_vprintf(log_hook);
     nvs_handle_t h;
     uint8_t on = 0;
     if (nvs_open("wifi_link", NVS_READONLY, &h) == ESP_OK) {

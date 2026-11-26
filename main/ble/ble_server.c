@@ -74,21 +74,21 @@ static const ble_uuid128_t s_version_uuid = BLE_UUID128_INIT(
     0xE0, 0xB1, 0x00, 0xCA, 0x05, 0x00, 0xDA, 0xCA
 );
 
-// Transmit service, for the CanPilot app: CADA0100-CA00-B1E0-B0D6-C000AA0100A1, a service of its own after the
+// Transmit service, for the CANLens app: CADA0300-CA00-B1E0-B0D6-C000AA0100A1 (0100/0101 are the OTA service's), a service of its own after the
 // others so that no existing handle moves.
-// Characteristic CADA0101-CA00-B1E0-B0D6-C000AA0100A1:
+// Characteristic CADA0301-CA00-B1E0-B0D6-C000AA0100A1:
 //   write: one transmit line as text, as on the USB port: "X,1" (arm, repeated every second), "X,0",
 //          "T,<bus>,<id>,<hex>". The rules in can/host_tx.h decide whether and when a frame goes on CAN.
 //   read:  "H,<armed>,<sent>,<refused>,<expired>" and a "D" line per bus with its CAN error state.
 // Any bonded device may use it, whichever one is active: it has its own arming.
 static const ble_uuid128_t s_tx_svc_uuid = BLE_UUID128_INIT(
     0xA1, 0x00, 0x01, 0xAA, 0x00, 0xC0, 0xD6, 0xB0,
-    0xE0, 0xB1, 0x00, 0xCA, 0x00, 0x01, 0xDA, 0xCA
+    0xE0, 0xB1, 0x00, 0xCA, 0x00, 0x03, 0xDA, 0xCA
 );
 
 static const ble_uuid128_t s_tx_chr_uuid = BLE_UUID128_INIT(
     0xA1, 0x00, 0x01, 0xAA, 0x00, 0xC0, 0xD6, 0xB0,
-    0xE0, 0xB1, 0x00, 0xCA, 0x01, 0x01, 0xDA, 0xCA
+    0xE0, 0xB1, 0x00, 0xCA, 0x01, 0x03, 0xDA, 0xCA
 );
 
 // Up to MAX_CONNS devices may hold a connection so a stale link can't lock out

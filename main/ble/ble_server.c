@@ -120,6 +120,7 @@ typedef struct {
     bool     claimed;          // asked to drive the vehicle (0x4F 00); reset on reconnect
     bool     compact;          // asked for compact CAN packets (0x52 01); reset on reconnect
     bool     recheck;          // an interval request came during another: ask again when that one ends
+    uint32_t notified;         // CAN stream bytes sent since ble_server_log_stream last said
 } conn_slot_t;
 
 static conn_slot_t s_conns[MAX_CONNS];
@@ -266,8 +267,22 @@ static void request_interval(uint16_t handle)
 void ble_server_slow(bool slow)
 {
     s_slow = slow;
-    for (int i = 0; i < MAX_CONNS; i++)
+    for (int i = 0; i < MAX_CONNS; i++) {
+        s_conns[i].notified = 0;
         if (s_conns[i].handle != BLE_HS_CONN_HANDLE_NONE) request_interval(s_conns[i].handle);
+    }
+}
+
+void ble_server_log_stream(unsigned seconds)
+{
+    for (int i = 0; i < MAX_CONNS; i++) {
+        conn_slot_t *c = &s_conns[i];
+        if (c->handle == BLE_HS_CONN_HANDLE_NONE || !c->subscribed) continue;
+        struct ble_gap_conn_desc d;
+        ESP_LOGI(TAG, "CAN stream to handle %d: %lu B/s, %d ms", c->handle, (unsigned long)(c->notified / seconds),
+                 ble_gap_conn_find(c->handle, &d) == 0 ? d.conn_itvl * 5 / 4 : -1);
+        c->notified = 0;
+    }
 }
 
 static void slot_open(conn_slot_t *slot, uint16_t handle)
@@ -1141,6 +1156,7 @@ esp_err_t ble_server_notify_to(const ble_receiver_t *r, const uint8_t *data, siz
         ESP_LOGW(TAG, "Notify failed (handle=%d): %d", conn, rc);
         return ESP_FAIL;
     }
+    s_conns[r->slot].notified += len;
     return ESP_OK;
 }
 

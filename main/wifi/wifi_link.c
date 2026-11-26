@@ -136,6 +136,7 @@ static void serve(int sock)
     struct sockaddr_in to = { 0 };
     socklen_t to_size = sizeof(to);
     int64_t last_m = 0;
+    unsigned seconds = 0;
     bool asked = false;  // nothing goes out before the client's first line: a connection that only looks takes no log
     while (s_on) {
         fd_set readable;
@@ -193,6 +194,7 @@ static void serve(int sock)
             const esp_app_desc_t *app = esp_app_get_description();
             n += snprintf(line + n, sizeof(line) - n, ",%d,%u\nV,%s %s\n", rssi, (unsigned)(esp_get_free_heap_size() / 1024), app->date, app->time);
             ok = send_all(sock, line, n);
+            if (udp >= 0 && ++seconds % 10 == 0) ble_server_log_stream(10);   // what Bluetooth takes of the radio
             if (unsent_memory + unsent_buffer != unsent_told) {
                 unsent_told = unsent_memory + unsent_buffer;
                 ESP_LOGW(TAG, "datagrams not sent: %lu for memory, %lu for a transmit buffer", (unsigned long)unsent_memory, (unsigned long)unsent_buffer);

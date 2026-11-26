@@ -14,6 +14,9 @@ esp_err_t ble_server_start(void);
 // While the Wi-Fi stream runs (it shares the radio): ask every connection to talk every ~100 ms, not every few ms.
 void ble_server_slow(bool slow);
 
+// Logs each CAN stream subscriber's bytes per second over the last [seconds] and its connection interval.
+void ble_server_log_stream(unsigned seconds);
+
 // A device that gets the CAN stream.
 typedef struct {
     uint16_t conn;     // connection handle

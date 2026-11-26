@@ -34,7 +34,7 @@ def load_manifest(path):
 
     Each non-comment line is:  NAME  BUS  ROLE
       BUS  in {0, 1}
-      ROLE in {decode, filter}
+      ROLE in {decode, filter, both}
     Returns a list of dicts {name, bus, role} in file order.
     """
     entries = []
@@ -54,9 +54,9 @@ def load_manifest(path):
                 sys.stderr.write("error: %s:%d: bus must be 0 or 1, got %r\n"
                                  % (path, lineno, bus_s))
                 sys.exit(1)
-            if role not in ("decode", "filter"):
+            if role not in ("decode", "filter", "both"):
                 sys.stderr.write(
-                    "error: %s:%d: role must be 'decode' or 'filter', got %r\n"
+                    "error: %s:%d: role must be 'decode', 'filter' or 'both', got %r\n"
                     % (path, lineno, role))
                 sys.exit(1)
             entries.append({"name": name, "bus": int(bus_s), "role": role})
@@ -98,7 +98,7 @@ def generate(dbc_path, manifest_path, out_c, out_h):
 
     # Only `decode` entries get full signal/message tables (flash cost). Track
     # the annotated bus per decode message so default_bus is data-driven.
-    decode_entries = [e for e in manifest if e["role"] == "decode"]
+    decode_entries = [e for e in manifest if e["role"] in ("decode", "both")]
     messages = [by_name[e["name"]] for e in decode_entries]
     bus_of = {e["name"]: e["bus"] for e in decode_entries}
 
@@ -108,11 +108,12 @@ def generate(dbc_path, manifest_path, out_c, out_h):
     # gets while it hasn't sent its own CAN filter.
     NUM_BUSES = 2
     hw_filter_ids = [[] for _ in range(NUM_BUSES)]
+    app_filter_ids = [[] for _ in range(NUM_BUSES)]   # what the app gets: filter and both
     for e in manifest:
         sid = by_name[e["name"]].frame_id & 0x7FF
-        lst = hw_filter_ids[e["bus"]]
-        if sid not in lst:
-            lst.append(sid)
+        for ids, wanted in ((hw_filter_ids, True), (app_filter_ids, e["role"] != "decode")):
+            if wanted and sid not in ids[e["bus"]]:
+                ids[e["bus"]].append(sid)
     for b, lst in enumerate(hw_filter_ids):
         if len(lst) > 255:
             sys.stderr.write("error: bus %d lists %d ids (max 255)\n"
@@ -235,7 +236,8 @@ def generate(dbc_path, manifest_path, out_c, out_h):
     h.append("// Per-bus lists of the used_messages.txt ids (11-bit standard IDs).")
     h.append("// Index g_dbc_hw_filters[] by physical bus id (0=chassis, 1=vehicle).")
     h.append("// The buses are received in full; these are the ids the firmware acts")
-    h.append("// on and forwards to an app that has not sent its own CAN filter.")
+    h.append("// on, and g_dbc_app_filters those it forwards to an app that has not")
+    h.append("// sent its own CAN filter (roles filter and both).")
     h.append("typedef struct {")
     h.append("    const uint16_t *ids;")
     h.append("    uint8_t         count;")
@@ -243,6 +245,7 @@ def generate(dbc_path, manifest_path, out_c, out_h):
     h.append("")
     h.append("#define DBC_HW_FILTER_BUS_COUNT %d" % NUM_BUSES)
     h.append("extern const dbc_hw_filter_set_t g_dbc_hw_filters[DBC_HW_FILTER_BUS_COUNT];")
+    h.append("extern const dbc_hw_filter_set_t g_dbc_app_filters[DBC_HW_FILTER_BUS_COUNT];")
     h.append("")
 
     # --- Emit source ---
@@ -276,17 +279,18 @@ def generate(dbc_path, manifest_path, out_c, out_h):
     c.append("")
 
     # Per-bus HW acceptance-filter ID arrays + the index table.
-    for b, lst in enumerate(hw_filter_ids):
-        if lst:
-            c.append("static const uint16_t hw_filter_bus%d_ids[] = {" % b)
-            c.append("    " + ", ".join("0x%03X" % i for i in lst) + ",")
-            c.append("};")
-    c.append("const dbc_hw_filter_set_t g_dbc_hw_filters[DBC_HW_FILTER_BUS_COUNT] = {")
-    for b, lst in enumerate(hw_filter_ids):
-        arr = ("hw_filter_bus%d_ids" % b) if lst else "0"
-        c.append("    { %s, %d }," % (arr, len(lst)))
-    c.append("};")
-    c.append("")
+    for prefix, table in (("hw", hw_filter_ids), ("app", app_filter_ids)):
+        for b, lst in enumerate(table):
+            if lst:
+                c.append("static const uint16_t %s_filter_bus%d_ids[] = {" % (prefix, b))
+                c.append("    " + ", ".join("0x%03X" % i for i in lst) + ",")
+                c.append("};")
+        c.append("const dbc_hw_filter_set_t g_dbc_%s_filters[DBC_HW_FILTER_BUS_COUNT] = {" % prefix)
+        for b, lst in enumerate(table):
+            arr = ("%s_filter_bus%d_ids" % (prefix, b)) if lst else "0"
+            c.append("    { %s, %d }," % (arr, len(lst)))
+        c.append("};")
+        c.append("")
 
     os.makedirs(os.path.dirname(out_h), exist_ok=True)
     with open(out_h, "w") as f:

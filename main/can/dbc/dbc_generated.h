@@ -42,7 +42,8 @@ extern const dbc_signal_t  g_dbc_signals[DBC_SIGNAL_COUNT];
 // Per-bus lists of the used_messages.txt ids (11-bit standard IDs).
 // Index g_dbc_hw_filters[] by physical bus id (0=chassis, 1=vehicle).
 // The buses are received in full; these are the ids the firmware acts
-// on and forwards to an app that has not sent its own CAN filter.
+// on, and g_dbc_app_filters those it forwards to an app that has not
+// sent its own CAN filter (roles filter and both).
 typedef struct {
     const uint16_t *ids;
     uint8_t         count;
@@ -50,3 +51,4 @@ typedef struct {
 
 #define DBC_HW_FILTER_BUS_COUNT 2
 extern const dbc_hw_filter_set_t g_dbc_hw_filters[DBC_HW_FILTER_BUS_COUNT];
+extern const dbc_hw_filter_set_t g_dbc_app_filters[DBC_HW_FILTER_BUS_COUNT];

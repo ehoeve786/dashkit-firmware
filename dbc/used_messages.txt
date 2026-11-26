@@ -5,10 +5,13 @@
 #   BUS  = 0 (chassis / party) or 1 (vehicle) -- the physical bus the frame
 #          rides on.
 #   ROLE = decode : firmware decodes this message's signals on-device (full
-#                   signal table emitted -- costs flash).
+#                   signal table emitted -- costs flash); the app doesn't get it.
 #          filter : firmware does NOT decode it; the frame reaches the DashPilot
 #                   app over BLE while the app hasn't sent its own CAN filter.
 #                   No signal table is emitted.
+#          both   : decode and filter: the firmware decodes it and the app gets it.
+#   An app without its own filter gets only filter and both: decode-only frames
+#   (~15% of them) took radio time from the Wi-Fi capture for nothing.
 # Both buses are received in full, so the number of entries is not limited by
 # the MCP251xFD's 32 filters.
 #
@@ -21,14 +24,14 @@
 
 # ---- Firmware-decoded messages (all on the vehicle bus) ----
 SCCM_leftStalk        1 decode   # wiper-off: left-stalk wiper button + counter/checksum
-VCLEFT_switchStatus   1 decode   # wiper-off scroll-tick; also app: buckle status
+VCLEFT_switchStatus   1 both     # wiper-off scroll-tick; also app: buckle status
 DAS_bodyControls      1 decode   # wiper-off: DAS_wiperSpeed trigger; signal off in Park: turn signal cancel
 UI_status2            1 decode   # multi-finger: UI_activeTouchPoints
 UI_vehicleControl     1 decode   # vehicle control: closure / mirror fold
 UI_vehicleControl2    1 decode   # vehicle control: glovebox (RMW)
 UI_chargeRequest      1 decode   # vehicle control: charge port open/close (RMW)
 UI_tripPlanning       1 decode   # battery preheat: faked supercharger nav (raw RMW)
-UI_hvacRequest        1 decode   # rear AC fan toggle; also app: climate setpoint
+UI_hvacRequest        1 both     # rear AC fan toggle; also app: climate setpoint
 UI_powertrainControl  1 decode   # sport kick-down: UI_pedalMap (RMW)
 UI_ventPanelControlRequest 1 decode  # ac swing: UI_ventPanelLeftPositionX (RMW)
 VCSEC_requests        1 decode   # door unlatch: VCSEC_*ClosureRequest + *RequestReason (RMW)
@@ -37,16 +40,16 @@ EPBR_internalStatus   1 decode   # door unlatch: parked check while the drive in
 
 # ---- App-forwarded messages on the chassis bus (bus 0) ----
 SCCM_steeringAngleSensor  0 filter  # app: steering angle
-DI_systemStatus           0 decode  # app: gear; mirror dip reads DI_gear
-DI_speed                  0 decode  # app: speed; door unlatch: DI_vehicleSpeed gate
-DAS_status                0 decode  # app: blind spot / speed limit / lane+collision warn; wiper-off gate reads DAS_autopilotState
+DI_systemStatus           0 both    # app: gear; mirror dip reads DI_gear
+DI_speed                  0 both    # app: speed; door unlatch: DI_vehicleSpeed gate
+DAS_status                0 both    # app: blind spot / speed limit / lane+collision warn; wiper-off gate reads DAS_autopilotState
 DAS_status2               0 filter  # app: ADAS state
 DAS_road                  0 filter  # app: traffic light color / stop line dist
 DAS_control               0 decode  # wiper-off gate reads DAS_accState (TACC engaged, incl. openpilot)
 
 # ---- App-forwarded messages on the vehicle bus (bus 1) ----
-VCLEFT_lightStatus        1 decode  # app: left turn signal; signal off in Park: left lamp
-VCRIGHT_lightStatus       1 decode  # app: right turn signal; signal off in Park: right lamp
+VCLEFT_lightStatus        1 both    # app: left turn signal; signal off in Park: left lamp
+VCRIGHT_lightStatus       1 both    # app: right turn signal; signal off in Park: right lamp
 VCFRONT_status            1 filter  # app: any door open
 BMS_energyStatus          1 filter  # app: pack energy
 BMS_powerAvailable        1 filter  # app: regen / discharge power

@@ -35,6 +35,14 @@ static size_t entry(uint8_t *p, uint8_t bus, const uint32_t *ids, uint8_t n)
     return o;
 }
 
+// What an app without a list of its own gets: the filter and both roles.
+static bool in_app(int bus, uint32_t id)
+{
+    for (int i = 0; i < g_dbc_app_filters[bus].count; i++)
+        if (g_dbc_app_filters[bus].ids[i] == id) return true;
+    return false;
+}
+
 static uint32_t not_listed(int bus)
 {
     for (uint32_t id = 0x700; id < 0x7FF; id++) if (!in_manifest(bus, id)) return id;
@@ -44,13 +52,16 @@ static uint32_t not_listed(int bus)
 static void before_init_and_with_no_list_the_manifest_ids_are_forwarded(void)
 {
     // Not "everything", as before the controllers received the whole bus.
-    CHECK(can_filter_should_forward(1, g_dbc_hw_filters[1].ids[0]));
+    CHECK(can_filter_should_forward(1, g_dbc_app_filters[1].ids[0]));
     CHECK(!can_filter_should_forward(1, not_listed(1)));
+    // A decode-only id (SCCM_leftStalk heads bus 1's list) feeds the firmware's hooks, not the app.
+    CHECK(!in_app(1, g_dbc_hw_filters[1].ids[0]) && !can_filter_should_forward(1, g_dbc_hw_filters[1].ids[0]));
 
     CHECK(can_filter_init() == ESP_OK);
     for (int bus = 0; bus < DBC_HW_FILTER_BUS_COUNT; bus++) {
         for (uint32_t id = 0; id < 2048; id++) {
-            CHECK(can_filter_should_forward((uint8_t)bus, id) == in_manifest(bus, id));
+            CHECK(can_filter_should_forward((uint8_t)bus, id) == in_app(bus, id));
+            CHECK(!in_app(bus, id) || in_manifest(bus, id));
             CHECK(can_filter_is_used((uint8_t)bus, id) == in_manifest(bus, id));
         }
     }
@@ -63,7 +74,7 @@ static void before_init_and_with_no_list_the_manifest_ids_are_forwarded(void)
 
 static void an_app_list_replaces_the_default_but_not_the_firmwares_set(void)
 {
-    uint32_t used = g_dbc_hw_filters[1].ids[0], extra = not_listed(1);
+    uint32_t used = g_dbc_app_filters[1].ids[0], extra = not_listed(1);
     uint8_t buf[64];
     size_t n = entry(buf, 1, (uint32_t[]){ extra }, 1);
     n += entry(buf + n, 0, (uint32_t[]){ 0x129 }, 1);
@@ -97,7 +108,7 @@ static void an_app_list_replaces_the_default_but_not_the_firmwares_set(void)
 
 static void a_malformed_list_changes_nothing(void)
 {
-    uint32_t used = g_dbc_hw_filters[1].ids[0], extra = not_listed(1);
+    uint32_t used = g_dbc_app_filters[1].ids[0], extra = not_listed(1);
     uint8_t buf[16];
     size_t n = entry(buf, 1, (uint32_t[]){ extra }, 1);
     CHECK(can_filter_set(0, buf, n) == ESP_OK);
@@ -110,7 +121,7 @@ static void a_malformed_list_changes_nothing(void)
 
 static void each_device_gets_its_own_ids(void)
 {
-    uint32_t used = g_dbc_hw_filters[1].ids[0], extra = not_listed(1);
+    uint32_t used = g_dbc_app_filters[1].ids[0], extra = not_listed(1);
     uint8_t buf[32];
 
     // Two devices, neither wrote a list: both get the manifest ids.

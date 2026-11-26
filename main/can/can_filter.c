@@ -18,7 +18,7 @@ typedef struct {
 
 // The per-frame checks run in the CAN receive tasks for every frame on both buses, so for standard ids on
 // the two CAN buses they are one bit lookup with no lock:
-//   s_used: the ids dbc/used_messages.txt lists (fixed).
+//   s_used: the ids dbc/used_messages.txt lists (fixed); s_app: those of them an app gets without a list of its own.
 //   a set:  which standard ids go on, and whether the used_messages.txt ids do too. There is one per device
 //           and one for the union of all of them. The writer fills the copy readers are not using and then
 //           switches its index, so a reader sees the old set or the new one.
@@ -44,7 +44,7 @@ static slot_t            s_slots[CAN_FILTER_SLOTS];
 static filter_set_t      s_union[2];
 static volatile uint8_t  s_union_idx;
 static SemaphoreHandle_t s_lock = NULL;
-static uint32_t          s_used[FILTER_BUSES][FILTER_WORDS];
+static uint32_t          s_used[FILTER_BUSES][FILTER_WORDS], s_app[FILTER_BUSES][FILTER_WORDS];
 static bool              s_used_built;
 
 static inline bool bit_test(const uint32_t *bits, uint32_t id) { return (bits[id >> 5] >> (id & 31)) & 1u; }
@@ -55,9 +55,12 @@ static void build_used(void)
 {
     if (s_used_built) return;
     for (int b = 0; b < FILTER_BUSES && b < DBC_HW_FILTER_BUS_COUNT; b++) {
-        const dbc_hw_filter_set_t *fs = &g_dbc_hw_filters[b];
+        const dbc_hw_filter_set_t *fs = &g_dbc_hw_filters[b], *app = &g_dbc_app_filters[b];
         for (uint16_t i = 0; i < fs->count; i++) {
             if (fs->ids[i] <= 0x7FF) bit_set(s_used[b], fs->ids[i]);
+        }
+        for (uint16_t i = 0; i < app->count; i++) {
+            if (app->ids[i] <= 0x7FF) bit_set(s_app[b], app->ids[i]);
         }
     }
     s_used_built = true;
@@ -209,7 +212,7 @@ esp_err_t can_filter_set(uint8_t slot, const uint8_t *data, size_t len)
 
 static bool set_has(const filter_set_t *f, uint8_t bus_id, uint32_t addr)
 {
-    return (f->used && bit_test(s_used[bus_id], addr)) || bit_test(f->bits[bus_id], addr);
+    return (f->used && bit_test(s_app[bus_id], addr)) || bit_test(f->bits[bus_id], addr);
 }
 
 // A non-standard frame: in a device's list as an exact entry? Caller holds s_lock.
@@ -227,7 +230,7 @@ static bool slot_lists(const slot_t *s, uint8_t bus_id, uint32_t addr)
 bool can_filter_should_forward(uint8_t bus_id, uint32_t addr)
 {
     build_used();
-    if (!s_lock) return can_filter_is_used(bus_id, addr);
+    if (!s_lock) return fast_path(bus_id, addr) && bit_test(s_app[bus_id], addr);
     if (fast_path(bus_id, addr)) return set_has(&s_union[s_union_idx], bus_id, addr);
 
     xSemaphoreTake(s_lock, portMAX_DELAY);

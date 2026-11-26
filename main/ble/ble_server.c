@@ -119,6 +119,7 @@ typedef struct {
     bool     read_only;        // opted out of driving the vehicle (0x4F 01); reset on reconnect
     bool     claimed;          // asked to drive the vehicle (0x4F 00); reset on reconnect
     bool     compact;          // asked for compact CAN packets (0x52 01); reset on reconnect
+    bool     recheck;          // an interval request came during another: ask again when that one ends
 } conn_slot_t;
 
 static conn_slot_t s_conns[MAX_CONNS];
@@ -255,10 +256,11 @@ static volatile bool s_slow;
  */
 static void request_interval(uint16_t handle)
 {
-    const conn_slot_t *slot = slot_by_handle(handle);
+    conn_slot_t *slot = slot_by_handle(handle);
     bool slow = s_slow && !(slot && slot->subscribed);
     struct ble_gap_upd_params p = { .itvl_min = slow ? 72 : 12, .itvl_max = slow ? 88 : 24, .supervision_timeout = 400 };
-    ble_gap_update_params(handle, &p);
+    // one update at a time: an iPhone that reconnects subscribed kept the slow one asked for at its slot's opening
+    if (ble_gap_update_params(handle, &p) == BLE_HS_EALREADY && slot) slot->recheck = true;
 }
 
 void ble_server_slow(bool slow)
@@ -284,8 +286,8 @@ static void slot_open(conn_slot_t *slot, uint16_t handle)
     slot->read_only = false;
     slot->claimed = false;
     slot->compact = false;
+    slot->recheck = false;
     can_filter_open((uint8_t)(slot - s_conns));
-    if (s_slow) request_interval(handle);
 }
 
 // The slot's device is gone: free it and drop its CAN filter.
@@ -450,6 +452,7 @@ static int gap_event_handler(struct ble_gap_event *event, void *arg)
                  slot->subscribed, bond_count(), conn_count(), MAX_CONNS);
         ble_att_set_preferred_mtu(512);
         ble_gattc_exchange_mtu(slot->handle, NULL, NULL);
+        if (s_slow) request_interval(slot->handle);   // now that it is up and its subscription known
         // Keep advertising while slots remain.
         start_advertising();
         break;
@@ -483,6 +486,8 @@ static int gap_event_handler(struct ble_gap_event *event, void *arg)
         struct ble_gap_conn_desc desc;
         if (ble_gap_conn_find(event->conn_update.conn_handle, &desc) == 0)
             ESP_LOGI(TAG, "Interval %d ms (handle=%d, status=%d)", desc.conn_itvl * 5 / 4, event->conn_update.conn_handle, event->conn_update.status);
+        conn_slot_t *slot = slot_by_handle(event->conn_update.conn_handle);
+        if (slot && slot->recheck) { slot->recheck = false; request_interval(slot->handle); }
         break;
     }
 

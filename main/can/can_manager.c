@@ -132,6 +132,43 @@ static int a_line(char *o, const c3x_frame_t *f)
     return p - o;
 }
 
+/*
+ * Frames for the Wi-Fi app, packed (wifi_link.h): about 13 bytes a frame instead of 34 as text, so both buses fit
+ * through a radio shared with BLE. An item is 'B', the first frame's time (µs since boot, u32 LE), then per frame:
+ * a byte (bit 7 bus, bit 6 extended, bits 0-3 length), the time since the first frame (µs, u16 LE), the id (u16 LE,
+ * or u32 LE when extended) and the data. An item ends before a frame that wouldn't fit or is 65 ms later.
+ */
+static uint8_t  s_packed[1024];
+static int      s_packed_len, s_packed_frames;
+static uint32_t s_packed_start;
+
+static void packed_flush(void)
+{
+    if (s_packed_len && !wifi_link_send((const char *)s_packed, s_packed_len)) s_wifi_drop += s_packed_frames;
+    s_packed_len = s_packed_frames = 0;
+}
+
+static void packed_add(const c3x_frame_t *f)
+{
+    uint32_t after = f->time - s_packed_start;
+    int size = 3 + (f->ext ? 4 : 2) + f->dlc;
+    if (s_packed_len && (after > 0xFFFF || s_packed_len + size > (int)sizeof(s_packed))) packed_flush();
+    if (!s_packed_len) {
+        s_packed[0] = 'B';
+        memcpy(s_packed + 1, &f->time, 4);
+        s_packed_start = f->time;
+        s_packed_len = 5;
+        after = 0;
+    }
+    uint8_t *p = s_packed + s_packed_len;
+    *p++ = (f->bus & 1) << 7 | (f->ext ? 0x40 : 0) | (f->dlc & 0x0F);
+    *p++ = after; *p++ = after >> 8;
+    for (int i = 0; i < (f->ext ? 4 : 2); i++) *p++ = f->id >> (8 * i);
+    memcpy(p, f->data, f->dlc);
+    s_packed_len += size;
+    s_packed_frames++;
+}
+
 static void lanes_task(void *arg)
 {
     static char out[1024];
@@ -196,14 +233,20 @@ static void lanes_task(void *arg)
             n += snprintf(out + n, sizeof(out) - n, "H,%d,%lu,%lu,%lu,%lu,%lu\n", host_tx_armed((uint32_t)(now / 1000)), (unsigned long)tx->sent,
                           (unsigned long)tx->refused, (unsigned long)tx->expired, (unsigned long)s_c3x_qdrop, (unsigned long)s_c3x_wdrop);
         }
+        // USB as before, unless only the Wi-Fi app wants the lines (nobody would read them there). The Wi-Fi app
+        // gets its frames packed, and the status and diagnostic lines as text (when USB has them, it doesn't).
+        bool usb = s_c3x_up || s_host_usb || !s_host_wifi;
         // 10 ms wait when idle: ~350 C3X lines/s come in
         if (xQueueReceive(s_c3x_q, &f, n ? 0 : pdMS_TO_TICKS(10)) == pdTRUE) {
-            do { n += a_line(out + n, &f); lines++; }
-            while (n < (int)sizeof(out) - 48 && xQueueReceive(s_c3x_q, &f, 0) == pdTRUE);
+            do {
+                bool diag = f.bus & CAN_DIAG_BUS_FLAG;
+                if (usb || diag) { n += a_line(out + n, &f); lines++; }
+                if (s_host_wifi && !diag) packed_add(&f);
+            } while (n < (int)sizeof(out) - 48 && xQueueReceive(s_c3x_q, &f, 0) == pdTRUE);
         }
-        // USB as before, unless only the Wi-Fi app wants the lines (nobody would read them there)
-        if (n && (s_c3x_up || s_host_usb || !s_host_wifi) && usb_serial_jtag_write_bytes(out, n, 0) != n) s_c3x_wdrop += lines;
-        if (n && s_host_wifi && !wifi_link_send(out, n)) s_wifi_drop += lines;
+        if (n && usb && usb_serial_jtag_write_bytes(out, n, 0) != n) s_c3x_wdrop += lines;
+        if (n && !usb && !wifi_link_send(out, n)) s_wifi_drop += lines;
+        packed_flush();
     }
 }
 

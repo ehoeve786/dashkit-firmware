@@ -6,9 +6,10 @@
 // phone's hotspot) and serves one TCP client on port WIFI_LINK_PORT. Off until switched on over BLE; the choice and
 // the network are kept in NVS. Nothing is sent before the client's first line.
 //  in:  "L,1" once a second: every frame of both buses ("L,0", or 2 s without it: stop). "U,<port>": frames go as UDP
-//       datagrams to that port of the client ("Q,<sequence>" then the lines), not on TCP. Nothing else: transmitting
+//       datagrams to that port of the client, packed: 'B', a sequence number (u32 LE), the first frame's time (µs
+//       since boot, u32 LE), then the frames as can_manager.c packs them. Nothing else: transmitting
 //       stays on USB and BLE, which a stranger on the network can't reach.
-//  out: while asked, the lines the USB port's app gets ("A" with its bus time, "D", "H", see can_manager.c); always:
+//  out: while asked, "D" and "H" lines (see can_manager.c), frames only as datagrams; always:
 //       "G,<line>" the firmware log ("g,<rest>" continues the line before it) from when Wi-Fi was first switched on (what the client missed, up to ~8 KB),
 //       once a second "M,..." metrics (can_manager_metrics), then ",<RSSI dBm>,<free heap KB>".
 #define WIFI_LINK_PORT 62402

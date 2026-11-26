@@ -21,6 +21,7 @@
 static const char *TAG = "wifi_link";
 
 #define RING_BYTES  (8 * 1024)
+#define HEAP_KEPT   (24 * 1024)  // free heap a datagram may not take: BLE allocates as it goes
 #define HEAP_NEEDED (48 * 1024)  // free heap Wi-Fi start-up needs (~45 KB with the buffers in sdkconfig.defaults)
 #define LOG_MAX     300   // longer log lines are cut
 
@@ -138,11 +139,15 @@ static void serve(int sock)
         bool ok = true;
         if (!asked) continue;
         while (ok && (item = xRingbufferReceive(s_ring, &size, 0))) {
-            if (udp >= 0 && item[0] != 'G' && item[0] != 'g') {
-                int head = snprintf(datagram, sizeof(datagram), "Q,%lu\n", (unsigned long)sequence++);
-                if (head + size <= sizeof(datagram)) {
-                    memcpy(datagram + head, item, size);
-                    sendto(udp, datagram, head + size, 0, (struct sockaddr *)&to, sizeof(to));   // not sent: a gap the app counts
+            if (item[0] == 'B') {
+                // packed frames: 'B', the sequence number (u32 LE), then the item after its 'B'. Below
+                // HEAP_KEPT free it isn't sent: BLE needs that memory more (a gap the app counts)
+                uint32_t number = sequence++;
+                if (udp >= 0 && size + 4 <= sizeof(datagram) && esp_get_free_heap_size() >= HEAP_KEPT) {
+                    datagram[0] = 'B';
+                    memcpy(datagram + 1, &number, 4);
+                    memcpy(datagram + 5, item + 1, size - 1);
+                    sendto(udp, datagram, size + 4, 0, (struct sockaddr *)&to, sizeof(to));
                 }
             } else ok = send_all(sock, item, size);
             vRingbufferReturnItem(s_ring, item);

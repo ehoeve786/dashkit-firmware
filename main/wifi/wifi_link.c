@@ -5,8 +5,7 @@
 #include "esp_log.h"
 #include "esp_system.h"
 #include "esp_netif.h"
-#include "esp_ota_ops.h"
-#include "ble_ota.h"
+#include "firmware_update.h"
 #include "esp_timer.h"
 #include "esp_wifi.h"
 #include "freertos/FreeRTOS.h"
@@ -101,41 +100,19 @@ static void drop_frames(void)
     }
 }
 
-/**
- * "O,<size>,<key>" then the image: written to the other OTA slot and booted, as BLE OTA does (main.c confirms it
- * once it runs, else the bootloader goes back). [first] holds the image bytes that came with the line. Answers
- * "O,ok" (then restarts) or "O,error <why>".
- */
+static int socket_read(void *context, char *buf, int max) { return recv(*(int *)context, buf, max, 0); }
+
+/** "O,<size>,<key>" then the image ([first]: its bytes that came with the line): answers "O,ok" (then restarts) or "O,error <why>". */
 static void flash(int sock, const char *line, const char *first, int first_size)
 {
-    static char chunk[1024];
+    char key[65] = { 0 }, answer[64];
     unsigned long size = 0;
-    char key[65] = { 0 };
-    const char *why = NULL;
-    esp_ota_handle_t handle = 0;
-    const esp_partition_t *slot = esp_ota_get_next_update_partition(NULL);
-    if (sscanf(line, "O,%lu,%64s", &size, key) != 2 || !s_key[0] || strcmp(key, s_key)) why = "wrong key";
-    else if (ble_ota_is_in_progress()) why = "a Bluetooth update is running";
-    else if (!slot || size == 0 || size > slot->size) why = "no room for that image";
-    else if (esp_ota_begin(slot, size, &handle) != ESP_OK) why = "can't start the update";
-    unsigned long got = 0;
-    if (!why && first_size > 0) {
-        if (esp_ota_write(handle, first, first_size) != ESP_OK) why = "write failed";
-        got = first_size;
-    }
+    const char *why = sscanf(line, "O,%lu,%64s", &size, key) != 2 || !s_key[0] || strcmp(key, s_key) ? "wrong key" : NULL;
     struct timeval limit = { .tv_sec = 10 };
     setsockopt(sock, SOL_SOCKET, SO_RCVTIMEO, &limit, sizeof(limit));
-    while (!why && got < size) {
-        int r = recv(sock, chunk, size - got < sizeof(chunk) ? size - got : sizeof(chunk), 0);
-        if (r <= 0) why = "the upload stopped";
-        else if (esp_ota_write(handle, chunk, r) != ESP_OK) why = "write failed";
-        else got += r;
-    }
-    if (!why && esp_ota_end(handle) != ESP_OK) { why = "the image isn't valid"; handle = 0; }
-    else if (!why && esp_ota_set_boot_partition(slot) != ESP_OK) why = "can't boot it";
-    if (why && handle) esp_ota_abort(handle);
-    int n = snprintf(chunk, sizeof(chunk), why ? "O,error %s\n" : "O,ok\n", why);
-    send_all(sock, chunk, n);
+    if (!why) why = firmware_update(size, first, first_size, socket_read, &sock);
+    int n = snprintf(answer, sizeof(answer), why ? "O,error %s\n" : "O,ok\n", why);
+    send_all(sock, answer, n);
     ESP_LOGI(TAG, "Wi-Fi update: %s", why ? why : "done, restarting");
     if (!why) { vTaskDelay(pdMS_TO_TICKS(500)); esp_restart(); }
 }

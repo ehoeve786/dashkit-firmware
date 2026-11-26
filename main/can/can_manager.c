@@ -7,6 +7,8 @@
 #include "dbc.h"
 #include "mcp251xfd.h"
 #include "wifi_link.h"
+#include "firmware_update.h"
+#include "esp_system.h"
 #include "driver/usb_serial_jtag.h"
 #include "esp_log.h"
 #include "esp_timer.h"
@@ -169,6 +171,20 @@ static void packed_add(const c3x_frame_t *f)
     s_packed_frames++;
 }
 
+static int usb_read(void *context, char *buf, int max) { (void)context; return usb_serial_jtag_read_bytes(buf, max, pdMS_TO_TICKS(10000)); }
+
+/** "O,<size>" on USB, then the image ([first]: its bytes read with the line): no key, a cable is in reach already. */
+static void usb_flash(const char *line, const char *first, int first_size)
+{
+    char answer[64];
+    unsigned long size = 0;
+    const char *why = sscanf(line, "O,%lu", &size) == 1 ? firmware_update(size, first, first_size, usb_read, NULL) : "no size";
+    int n = snprintf(answer, sizeof(answer), why ? "O,error %s\n" : "O,ok\n", why);
+    usb_serial_jtag_write_bytes(answer, n, pdMS_TO_TICKS(500));
+    ESP_LOGI(TAG, "USB update: %s", why ? why : "done, restarting");
+    if (!why) { vTaskDelay(pdMS_TO_TICKS(500)); esp_restart(); }
+}
+
 static void lanes_task(void *arg)
 {
     static char out[1024];
@@ -186,6 +202,7 @@ static void lanes_task(void *arg)
                 in[il] = 0;
                 uint32_t line_ms = (uint32_t)(esp_timer_get_time() / 1000);
                 if (il && in[il - 1] == '\r') in[--il] = 0;
+                if (in[0] == 'O' && in[1] == ',') { usb_flash(in, b + i + 1, r - i - 1); il = 0; break; }
                 if (!strcmp(in, "L,1")) last_u = last_l = esp_timer_get_time();
                 else if (!strcmp(in, "L,0")) last_l = 0;
                 else if (host_tx_line(in, line_ms)) last_u = esp_timer_get_time();

@@ -46,6 +46,7 @@ idf_component_register(
         "ble/ble_appchan.c"
         "ble/ble_stream.c"
         "wifi/wifi_link.c"
+        "firmware_update.c"
         ${TESLA_SRCS}
         ${BTHOME_SRCS}
     INCLUDE_DIRS

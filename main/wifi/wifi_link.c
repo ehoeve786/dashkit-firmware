@@ -166,14 +166,13 @@ static void serve(int sock)
         if (!asked) continue;
         while (ok && (item = xRingbufferReceive(s_ring, &size, 0))) {
             if (item[0] == 'B') {
-                // packed frames: 'B', the sequence number (u32 LE), then the item after its 'B'. Below
-                // HEAP_KEPT free it isn't sent: BLE needs that memory more (a gap the app counts)
+                // packed frames: 'C' (compact; 'B' was the firmware before it), the sequence number (u32 LE), then the
+                // item after its tag. Not below HEAP_KEPT free (BLE needs that memory more) nor without a Wi-Fi
+                // transmit buffer: up to 50 ms for both (the ring holds ~150 ms of frames), else a gap the app counts
                 uint32_t number = sequence++;
-                // Wi-Fi's few transmit buffers fill (BLE shares the radio): wait for one, up to 20 ms, rather than drop
-                // up to 50 ms for both (the ring holds ~150 ms of frames): BLE frees memory, Wi-Fi a buffer
                 bool sent = false, low = false;
                 if (udp >= 0 && size + 4 <= sizeof(datagram)) {
-                    datagram[0] = 'B';
+                    datagram[0] = 'C';
                     memcpy(datagram + 1, &number, 4);
                     memcpy(datagram + 5, item + 1, size - 1);
                     for (int tries = 0; tries < 50; tries++, vTaskDelay(1)) {

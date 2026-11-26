@@ -135,14 +135,15 @@ static int a_line(char *o, const c3x_frame_t *f)
 }
 
 /*
- * Frames for the Wi-Fi app, packed (wifi_link.h): about 13 bytes a frame instead of 34 as text, so both buses fit
- * through a radio shared with BLE. An item is 'B', the first frame's time (µs since boot, u32 LE), then per frame:
- * a byte (bit 7 bus, bit 6 extended, bits 0-3 length), the time since the first frame (µs, u16 LE), the id (u16 LE,
- * or u32 LE when extended) and the data. An item ends before a frame that wouldn't fit or is 65 ms later.
+ * Frames for the Wi-Fi app, packed (wifi_link.h): about 10 bytes a frame instead of 34 as text, so both buses fit
+ * through a radio shared with BLE. An item is 'B', the first frame's time (µs since boot, u32 LE), then per frame
+ * (all LE): a u16 (bit 15 bus, bits 11-14 the length or 15 for extended, bits 0-10 the id), the µs since the frame
+ * before (u8, or 255 and a u16), for an extended frame its length (u8) and id (u32), then the data. An item ends
+ * before a frame that wouldn't fit or comes 65 ms or more after the one before (or before it: the buses' tasks race).
  */
 static uint8_t  s_packed[1400];   // with the sequence number still one unsplit UDP datagram (1472)
 static int      s_packed_len, s_packed_frames;
-static uint32_t s_packed_start;
+static uint32_t s_packed_start, s_packed_last;
 
 static void packed_flush(void)
 {
@@ -152,22 +153,24 @@ static void packed_flush(void)
 
 static void packed_add(const c3x_frame_t *f)
 {
-    uint32_t after = f->time - s_packed_start;
-    int size = 3 + (f->ext ? 4 : 2) + f->dlc;
-    if (s_packed_len && (after > 0xFFFF || s_packed_len + size > (int)sizeof(s_packed))) packed_flush();
+    uint32_t gap = f->time - s_packed_last;
+    if (s_packed_len && (gap > 0xFFFF || s_packed_len + 6 + (f->ext ? 5 : 0) + f->dlc > (int)sizeof(s_packed))) packed_flush();
     if (!s_packed_len) {
         s_packed[0] = 'B';
         memcpy(s_packed + 1, &f->time, 4);
-        s_packed_start = f->time;
+        s_packed_start = s_packed_last = f->time;
         s_packed_len = 5;
-        after = 0;
+        gap = 0;
     }
     uint8_t *p = s_packed + s_packed_len;
-    *p++ = (f->bus & 1) << 7 | (f->ext ? 0x40 : 0) | (f->dlc & 0x0F);
-    *p++ = after; *p++ = after >> 8;
-    for (int i = 0; i < (f->ext ? 4 : 2); i++) *p++ = f->id >> (8 * i);
+    uint16_t head = (f->bus & 1) << 15 | (f->ext ? 15 : f->dlc) << 11 | (f->ext ? 0 : f->id & 0x7FF);
+    *p++ = head; *p++ = head >> 8;
+    if (gap < 255) *p++ = gap;
+    else { *p++ = 255; *p++ = gap; *p++ = gap >> 8; }
+    if (f->ext) { *p++ = f->dlc; for (int i = 0; i < 4; i++) *p++ = f->id >> (8 * i); }
     memcpy(p, f->data, f->dlc);
-    s_packed_len += size;
+    s_packed_len = p + f->dlc - s_packed;
+    s_packed_last = f->time;
     s_packed_frames++;
 }
 

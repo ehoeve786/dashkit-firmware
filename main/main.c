@@ -134,7 +134,7 @@ void app_main(void)
     }
     ESP_ERROR_CHECK(err);
 
-    // First, so the Wi-Fi link's log has the whole boot
+    // First, so the Wi-Fi link's log has the whole boot when Wi-Fi was left on
     wifi_link_init();
     ESP_LOGI(TAG, "DashKit firmware starting... (reset reason=%d)",
              (int)esp_reset_reason());

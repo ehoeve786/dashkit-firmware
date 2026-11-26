@@ -8,11 +8,11 @@
 //  in:  "L,1" once a second: every frame of both buses ("L,0", or 2 s without it: stop). Nothing else: transmitting
 //       stays on USB and BLE, which a stranger on the network can't reach.
 //  out: while asked, the lines the USB port's app gets ("A" with its bus time, "D", "H", see can_manager.c); always:
-//       "G,<line>" the firmware log (the last ~32 KB of it from before the client came, then as it is written),
+//       "G,<line>" the firmware log from when Wi-Fi was first switched on (what the client missed, up to ~16 KB),
 //       once a second "M,..." metrics (can_manager_metrics), then ",<RSSI dBm>,<free heap KB>".
 #define WIFI_LINK_PORT 62402
 
-// Starts capturing the log, and Wi-Fi if it was left on. Call right after nvs_flash_init.
+// Starts Wi-Fi if it was left on. Call right after nvs_flash_init.
 void wifi_link_init(void);
 
 // A command from the BLE transmit characteristic: "W,1" on, "W,0" off, "WS,<ssid>", "WP,<password>" (applied on the

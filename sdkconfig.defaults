@@ -71,6 +71,11 @@ CONFIG_ESPTOOLPY_FLASHSIZE_16MB=y
 # Per-core CPU use for the Wi-Fi link's metrics (idle-task run time); plain log lines for its log
 CONFIG_FREERTOS_GENERATE_RUN_TIME_STATS=y
 CONFIG_LOG_COLORS=n
+# Wi-Fi and lwIP code from flash, not internal RAM: ~20 KB more heap for BLE + Wi-Fi together
+CONFIG_ESP_WIFI_IRAM_OPT=n
+CONFIG_ESP_WIFI_EXTRA_IRAM_OPT=n
+CONFIG_ESP_WIFI_RX_IRAM_OPT=n
+CONFIG_LWIP_IRAM_OPTIMIZATION=n
 
 # USB-Serial-JTAG is a data link to the comma 3X (driver in can_manager.c), not a log console
 CONFIG_ESP_CONSOLE_SECONDARY_NONE=y

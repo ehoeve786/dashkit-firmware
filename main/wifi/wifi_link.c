@@ -3,6 +3,7 @@
 #include "esp_event.h"
 #include "esp_heap_caps.h"
 #include "esp_log.h"
+#include "esp_system.h"
 #include "esp_netif.h"
 #include "esp_timer.h"
 #include "esp_wifi.h"
@@ -18,7 +19,8 @@
 
 static const char *TAG = "wifi_link";
 
-#define RING_BYTES  (32 * 1024)
+#define RING_BYTES  (16 * 1024)
+#define HEAP_NEEDED (80 * 1024)  // free heap Wi-Fi start-up needs, with room left for BLE
 #define LOG_MAX     300   // longer log lines are cut
 
 // One ring for both: log lines (always, oldest dropped for new) and the frame lines (only while a client asks).
@@ -187,11 +189,19 @@ static void save(void)
 static void apply(bool on)
 {
     if (!s_netif && on) {  // first time on: bring up the stack once, and leave it (stopping Wi-Fi frees the radio)
+        // Nothing of this before it is asked for: a DashKit with Wi-Fi off has the memory it always had. Too little
+        // free is refused here rather than run out later in BLE.
+        if (esp_get_free_heap_size() < HEAP_NEEDED + RING_BYTES) {
+            ESP_LOGE(TAG, "not enough memory for Wi-Fi: %u KB free", (unsigned)(esp_get_free_heap_size() / 1024));
+            s_reason = -1;
+            return;
+        }
+        if (!s_ring && (s_ring = xRingbufferCreate(RING_BYTES, RINGBUF_TYPE_NOSPLIT))) esp_log_set_vprintf(log_hook);
         wifi_init_config_t cfg = WIFI_INIT_CONFIG_DEFAULT();
         esp_err_t err = esp_netif_init();
         if (err == ESP_OK) err = esp_event_loop_create_default();
         if (err == ESP_OK || err == ESP_ERR_INVALID_STATE) s_netif = esp_netif_create_default_wifi_sta();
-        if (!s_netif || esp_wifi_init(&cfg) != ESP_OK || esp_wifi_set_storage(WIFI_STORAGE_RAM) != ESP_OK ||
+        if (!s_ring || !s_netif || esp_wifi_init(&cfg) != ESP_OK || esp_wifi_set_storage(WIFI_STORAGE_RAM) != ESP_OK ||
             esp_wifi_set_mode(WIFI_MODE_STA) != ESP_OK ||
             esp_event_handler_register(WIFI_EVENT, ESP_EVENT_ANY_ID, on_event, NULL) != ESP_OK ||
             esp_event_handler_register(IP_EVENT, IP_EVENT_STA_GOT_IP, on_event, NULL) != ESP_OK ||
@@ -218,6 +228,9 @@ static void apply(bool on)
 static void control_task(void *arg)
 {
     (void)arg;
+    // Wi-Fi left on starts once the rest is up and the image is confirmed (main.c, 10 s): never before BLE gets its
+    // memory, and a start that crashes can't hold the DashKit in a boot loop (see wifi_link_init).
+    vTaskDelay(pdMS_TO_TICKS(15000));
     for (;;) {
         uint32_t want = ulTaskNotifyTake(pdTRUE, portMAX_DELAY);  // 1 off, 2 on, 3 just save
         if (want != 3) apply(want == 2);
@@ -227,8 +240,6 @@ static void control_task(void *arg)
 
 void wifi_link_init(void)
 {
-    s_ring = xRingbufferCreate(RING_BYTES, RINGBUF_TYPE_NOSPLIT);
-    if (s_ring) esp_log_set_vprintf(log_hook);
     nvs_handle_t h;
     uint8_t on = 0;
     if (nvs_open("wifi_link", NVS_READONLY, &h) == ESP_OK) {
@@ -239,8 +250,12 @@ void wifi_link_init(void)
         nvs_get_u8(h, "on", &on);
         nvs_close(h);
     }
-    if (xTaskCreatePinnedToCore(control_task, "wifi_ctl", 4096, NULL, 2, &s_control, 0) == pdPASS && on && s_ssid[0])
-        apply(true);
+    esp_reset_reason_t reset = esp_reset_reason();
+    bool crashed = reset == ESP_RST_PANIC || reset == ESP_RST_INT_WDT || reset == ESP_RST_TASK_WDT || reset == ESP_RST_WDT;
+    if (xTaskCreatePinnedToCore(control_task, "wifi_ctl", 4096, NULL, 2, &s_control, 0) == pdPASS && on && s_ssid[0]) {
+        if (crashed) ESP_LOGW(TAG, "not switching Wi-Fi on: the last restart was a crash (switch it on again from the app)");
+        else xTaskNotify(s_control, 2, eSetValueWithOverwrite);
+    }
 }
 
 bool wifi_link_command(const char *line)

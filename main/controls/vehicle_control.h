@@ -114,10 +114,14 @@ typedef enum {
     // value: 0=front left (driver), 1=front right, 2=rear left, 3=rear right.
     VC_CMD_DOOR_UNLATCH = 0x50,
 
-    // --- Diagnostic records for the app's CAN log (can_diag.h) ---
+    // Config only, persisted in NVS. 1=enable, 0=disable.
+    VC_CMD_TOUCH_AUTO_HIGH_BEAM_ENABLE = 0x51,
+
+    // --- Diagnostic records for the app's CAN log (can_diag.h), fork only ---
+    // 0x5D, not 0x51: upstream gave 0x51 to the auto high beam toggle.
     // value: 1 = on (answers with a HELLO record), 0 = off. Not persisted;
     // switched off when the last phone disconnects.
-    VC_CMD_DIAG_LOG = 0x51,
+    VC_CMD_DIAG_LOG = 0x5D,
 } vehicle_control_opcode_t;
 
 // RX hook (called by can_manager for every received frame): phase-locks an

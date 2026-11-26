@@ -73,8 +73,10 @@ static int app_cmd_access(uint16_t conn_handle, uint16_t attr_handle,
         return BLE_ATT_ERR_REQ_NOT_SUPPORTED;
     }
 
-    // A read-only device (0x4F 01) may not write here.
-    if (!ble_server_can_write(conn_handle)) {
+    // Like vehicle control: only the active connection may pair, provision or
+    // erase the Tesla key (a read-only device never becomes the active one).
+    if (conn_handle != ble_server_get_conn_handle()) {
+        ESP_LOGW(TAG, "app-channel write from non-active handle %d rejected", conn_handle);
         return BLE_ATT_ERR_INSUFFICIENT_AUTHOR;
     }
 

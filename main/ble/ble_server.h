@@ -39,6 +39,10 @@ bool ble_server_can_write(uint16_t conn);
 // Check if a client is connected and subscribed to notifications
 bool ble_server_is_connected(void);
 
+// Largest notification payload the active connection carries in one piece
+// (ATT_MTU - 3); 0 when there is no active connection.
+size_t ble_server_notify_max(void);
+
 // Get the current BLE connection handle (BLE_HS_CONN_HANDLE_NONE if not connected)
 uint16_t ble_server_get_conn_handle(void);
 

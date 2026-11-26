@@ -13,6 +13,7 @@ static const char *TAG = "wiper_off";
 
 #define BUS  1
 
+#define DAS_BODY_CONTROLS_ID 0x3E9
 #define SCCM_LEFT_STALK_ID   0x249   // the steering column module sends it every 50 ms
 #define VCLEFT_SWITCH_ID     0x3C2   // the left body controller sends it every 50 ms
 
@@ -154,6 +155,12 @@ static void wiper_off_on_frame(automation_t *self, const can_tagged_frame_t *fra
     if (s_follow_id && frame->bus_id == BUS && frame->frame.id == s_follow_id) {
         s_car_frame_us = (uint32_t)esp_timer_get_time();
         xSemaphoreGive(s_car_frame_sem);
+        return;
+    }
+
+    // Called for every received frame; only a fresh DAS_bodyControls can
+    // change the wiper speed (can_get reads the cached copy by name).
+    if (frame->frame.id != DAS_BODY_CONTROLS_ID) {
         return;
     }
 

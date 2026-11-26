@@ -171,14 +171,31 @@ static void packed_add(const c3x_frame_t *f)
     s_packed_frames++;
 }
 
-static int usb_read(void *context, char *buf, int max) { (void)context; return usb_serial_jtag_read_bytes(buf, max, pdMS_TO_TICKS(10000)); }
+/*
+ * The USB driver keeps 1 KB and loses what comes past it (and flash writes stall the reader), so the app sends the
+ * image USB_CHUNK bytes at a time, each after a "K" line: one before the first read, then one per chunk taken.
+ */
+#define USB_CHUNK 512
+static int s_usb_taken;
 
-/** "O,<size>" on USB, then the image ([first]: its bytes read with the line): no key, a cable is in reach already. */
+static int usb_read(void *context, char *buf, int max)
+{
+    (void)context;
+    if (s_usb_taken >= USB_CHUNK) { usb_serial_jtag_write_bytes("K\n", 2, pdMS_TO_TICKS(500)); s_usb_taken = 0; }
+    if (max > USB_CHUNK - s_usb_taken) max = USB_CHUNK - s_usb_taken;
+    int r = usb_serial_jtag_read_bytes(buf, max, pdMS_TO_TICKS(10000));
+    if (r > 0) s_usb_taken += r;
+    return r;
+}
+
+/** "O,<size>" on USB, then the image in chunks (see usb_read): no key, a cable is in reach already. */
 static void usb_flash(const char *line, const char *first, int first_size)
 {
     char answer[64];
     unsigned long size = 0;
-    const char *why = sscanf(line, "O,%lu", &size) == 1 ? firmware_update(size, first, first_size, usb_read, NULL) : "no size";
+    s_usb_taken = USB_CHUNK;   // the first read asks for the first chunk; bytes after the line are not the image
+    const char *why = sscanf(line, "O,%lu", &size) == 1 ? firmware_update(size, NULL, 0, usb_read, NULL) : "no size";
+    (void)first; (void)first_size;
     int n = snprintf(answer, sizeof(answer), why ? "O,error %s\n" : "O,ok\n", why);
     usb_serial_jtag_write_bytes(answer, n, pdMS_TO_TICKS(500));
     ESP_LOGI(TAG, "USB update: %s", why ? why : "done, restarting");

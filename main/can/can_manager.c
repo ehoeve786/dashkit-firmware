@@ -271,7 +271,7 @@ esp_err_t can_manager_init(void)
     if (!s_rx_queue) {
         return ESP_ERR_NO_MEM;
     }
-    usb_serial_jtag_driver_config_t usj = { .tx_buffer_size = 8192, .rx_buffer_size = 4096 };
+    usb_serial_jtag_driver_config_t usj = { .tx_buffer_size = 8192, .rx_buffer_size = 1024 };
     s_c3x_q = xQueueCreate(512, sizeof(c3x_frame_t));
     s_host_line_q = xQueueCreate(16, sizeof(host_line_t));
     if (!s_c3x_q || !s_host_line_q || usb_serial_jtag_driver_install(&usj) != ESP_OK || xTaskCreate(lanes_task, "lanes", 3072, NULL, 1, NULL) != pdPASS) {

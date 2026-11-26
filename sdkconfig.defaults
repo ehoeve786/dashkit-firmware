@@ -76,6 +76,10 @@ CONFIG_ESP_WIFI_IRAM_OPT=n
 CONFIG_ESP_WIFI_EXTRA_IRAM_OPT=n
 CONFIG_ESP_WIFI_RX_IRAM_OPT=n
 CONFIG_LWIP_IRAM_OPTIMIZATION=n
+# Fewer Wi-Fi receive buffers (the link mostly sends; 79 KB is free with BLE up): ~10 KB less at Wi-Fi start
+CONFIG_ESP_WIFI_STATIC_RX_BUFFER_NUM=4
+CONFIG_ESP_WIFI_DYNAMIC_RX_BUFFER_NUM=16
+CONFIG_ESP_WIFI_AMPDU_RX_ENABLED=n
 
 # USB-Serial-JTAG is a data link to the comma 3X (driver in can_manager.c), not a log console
 CONFIG_ESP_CONSOLE_SECONDARY_NONE=y

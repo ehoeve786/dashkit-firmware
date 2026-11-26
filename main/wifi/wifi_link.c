@@ -19,8 +19,8 @@
 
 static const char *TAG = "wifi_link";
 
-#define RING_BYTES  (16 * 1024)
-#define HEAP_NEEDED (80 * 1024)  // free heap Wi-Fi start-up needs, with room left for BLE
+#define RING_BYTES  (8 * 1024)
+#define HEAP_NEEDED (48 * 1024)  // free heap Wi-Fi start-up needs (~45 KB with the buffers in sdkconfig.defaults)
 #define LOG_MAX     300   // longer log lines are cut
 
 // One ring for both: log lines (always, oldest dropped for new) and the frame lines (only while a client asks).

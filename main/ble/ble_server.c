@@ -750,11 +750,13 @@ static int gatt_tx_access(uint16_t conn_handle, uint16_t attr_handle,
     (void)attr_handle;
     (void)arg;
 
-    char text[128];
+    char text[160];
     if (ctxt->op == BLE_GATT_ACCESS_OP_READ_CHR) {
         int len = can_manager_host_status(text, sizeof(text) - 56);
         text[len++] = '\n';
-        len += wifi_link_status(text + len, sizeof(text) - len);
+        len += wifi_link_status(text + len, sizeof(text) - len - 32);
+        const esp_app_desc_t *app = esp_app_get_description();
+        len += snprintf(text + len, sizeof(text) - len, "\nV,%s %s", app->date, app->time);   // which build runs
         return os_mbuf_append(ctxt->om, text, len) == 0 ? 0 : BLE_ATT_ERR_INSUFFICIENT_RES;
     }
     if (ctxt->op != BLE_GATT_ACCESS_OP_WRITE_CHR) {

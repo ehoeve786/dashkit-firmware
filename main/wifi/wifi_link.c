@@ -6,6 +6,7 @@
 #include "esp_system.h"
 #include "esp_netif.h"
 #include "firmware_update.h"
+#include "esp_app_desc.h"
 #include "esp_timer.h"
 #include "esp_wifi.h"
 #include "freertos/FreeRTOS.h"
@@ -176,8 +177,9 @@ static void serve(int sock)
             last_m = now;
             int rssi = 0;
             esp_wifi_sta_get_rssi(&rssi);
-            int n = can_manager_metrics(line, sizeof(line) - 24);
-            n += snprintf(line + n, sizeof(line) - n, ",%d,%u\n", rssi, (unsigned)(esp_get_free_heap_size() / 1024));
+            int n = can_manager_metrics(line, sizeof(line) - 64);
+            const esp_app_desc_t *app = esp_app_get_description();
+            n += snprintf(line + n, sizeof(line) - n, ",%d,%u\nV,%s %s\n", rssi, (unsigned)(esp_get_free_heap_size() / 1024), app->date, app->time);
             ok = send_all(sock, line, n);
         }
         if (!ok) break;

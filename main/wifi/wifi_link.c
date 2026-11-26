@@ -170,7 +170,7 @@ static void serve(int sock)
                     datagram[0] = 'B';
                     memcpy(datagram + 1, &number, 4);
                     memcpy(datagram + 5, item + 1, size - 1);
-                    for (int tries = 0; !(sent = sendto(udp, datagram, size + 4, 0, (struct sockaddr *)&to, sizeof(to)) >= 0) && errno == ENOMEM && tries < 20; tries++) vTaskDelay(1);
+                    for (int tries = 0; !(sent = sendto(udp, datagram, size + 4, 0, (struct sockaddr *)&to, sizeof(to)) >= 0) && (errno == ENOMEM || errno == ENOBUFS) && tries < 20; tries++) vTaskDelay(1);
                 }
                 if (!sent) unsent++;
             } else ok = send_all(sock, item, size);

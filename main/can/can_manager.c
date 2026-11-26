@@ -140,7 +140,7 @@ static int a_line(char *o, const c3x_frame_t *f)
  * a byte (bit 7 bus, bit 6 extended, bits 0-3 length), the time since the first frame (µs, u16 LE), the id (u16 LE,
  * or u32 LE when extended) and the data. An item ends before a frame that wouldn't fit or is 65 ms later.
  */
-static uint8_t  s_packed[1024];
+static uint8_t  s_packed[1400];   // with the sequence number still one unsplit UDP datagram (1472)
 static int      s_packed_len, s_packed_frames;
 static uint32_t s_packed_start;
 

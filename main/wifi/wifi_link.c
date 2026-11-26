@@ -5,6 +5,8 @@
 #include "esp_log.h"
 #include "esp_system.h"
 #include "esp_netif.h"
+#include "esp_ota_ops.h"
+#include "ble_ota.h"
 #include "esp_timer.h"
 #include "esp_wifi.h"
 #include "freertos/FreeRTOS.h"
@@ -30,7 +32,7 @@ static RingbufHandle_t  s_ring;
 static TaskHandle_t     s_control;   // applies on/off: Wi-Fi start-up is too heavy for the BLE host task
 static volatile bool    s_on, s_client;
 static esp_netif_t     *s_netif;
-static char             s_ssid[33], s_pass[65];
+static char             s_ssid[33], s_pass[65], s_key[65];   // s_key: what "O" lines must carry to flash
 static volatile int     s_seen = -1, s_rssi, s_channel, s_auth;  // the last scan: networks seen; ours, if among them
 static volatile int     s_reason;    // why it isn't on the network: the last disconnect reason (wifi_err_reason_t), -1 start failed, 0 none
 
@@ -100,6 +102,45 @@ static void drop_frames(void)
 }
 
 /**
+ * "O,<size>,<key>" then the image: written to the other OTA slot and booted, as BLE OTA does (main.c confirms it
+ * once it runs, else the bootloader goes back). [first] holds the image bytes that came with the line. Answers
+ * "O,ok" (then restarts) or "O,error <why>".
+ */
+static void flash(int sock, const char *line, const char *first, int first_size)
+{
+    static char chunk[1024];
+    unsigned long size = 0;
+    char key[65] = { 0 };
+    const char *why = NULL;
+    esp_ota_handle_t handle = 0;
+    const esp_partition_t *slot = esp_ota_get_next_update_partition(NULL);
+    if (sscanf(line, "O,%lu,%64s", &size, key) != 2 || !s_key[0] || strcmp(key, s_key)) why = "wrong key";
+    else if (ble_ota_is_in_progress()) why = "a Bluetooth update is running";
+    else if (!slot || size == 0 || size > slot->size) why = "no room for that image";
+    else if (esp_ota_begin(slot, size, &handle) != ESP_OK) why = "can't start the update";
+    unsigned long got = 0;
+    if (!why && first_size > 0) {
+        if (esp_ota_write(handle, first, first_size) != ESP_OK) why = "write failed";
+        got = first_size;
+    }
+    struct timeval limit = { .tv_sec = 10 };
+    setsockopt(sock, SOL_SOCKET, SO_RCVTIMEO, &limit, sizeof(limit));
+    while (!why && got < size) {
+        int r = recv(sock, chunk, size - got < sizeof(chunk) ? size - got : sizeof(chunk), 0);
+        if (r <= 0) why = "the upload stopped";
+        else if (esp_ota_write(handle, chunk, r) != ESP_OK) why = "write failed";
+        else got += r;
+    }
+    if (!why && esp_ota_end(handle) != ESP_OK) { why = "the image isn't valid"; handle = 0; }
+    else if (!why && esp_ota_set_boot_partition(slot) != ESP_OK) why = "can't boot it";
+    if (why && handle) esp_ota_abort(handle);
+    int n = snprintf(chunk, sizeof(chunk), why ? "O,error %s\n" : "O,ok\n", why);
+    send_all(sock, chunk, n);
+    ESP_LOGI(TAG, "Wi-Fi update: %s", why ? why : "done, restarting");
+    if (!why) { vTaskDelay(pdMS_TO_TICKS(500)); esp_restart(); }
+}
+
+/**
  * One client at a time: its "L" lines in; the log and the metrics out on TCP, and once it sent "U,<port>" the frame
  * batches as UDP datagrams to that port, each "Q,<sequence>\n" and the batch. TCP waits for acknowledgements, which
  * modem sleep (kept for BLE) delays by hundreds of ms: too slow for both buses. A lost datagram shows as a gap.
@@ -107,7 +148,7 @@ static void drop_frames(void)
 static void serve(int sock)
 {
     static char datagram[1200];
-    char b[64], in[16], line[192];
+    char b[64], in[96], line[192];
     int il = 0, udp = -1;
     uint32_t sequence = 0;
     struct sockaddr_in to = { 0 };
@@ -128,6 +169,7 @@ static void serve(int sock)
                 in[il] = 0; if (il && in[il - 1] == '\r') in[il - 1] = 0;
                 il = 0; s_client = asked = true;
                 int port = 0;
+                if (in[0] == 'O') { flash(sock, in, b + i + 1, r - i - 1); goto done; }
                 if (sscanf(in, "U,%d", &port) == 1 && port > 0 && port < 65536 && udp < 0 && !getpeername(sock, (struct sockaddr *)&to, &to_size)) {
                     to.sin_port = htons(port);
                     udp = socket(AF_INET, SOCK_DGRAM, IPPROTO_IP);
@@ -163,6 +205,7 @@ static void serve(int sock)
         }
         if (!ok) break;
     }
+done:
     s_client = false;
     if (udp >= 0) close(udp);
     vTaskDelay(pdMS_TO_TICKS(20));  // a batch the lanes task was queuing as the client went
@@ -228,6 +271,7 @@ static void save(void)
     nvs_set_u8(h, "on", s_on);
     nvs_set_str(h, "ssid", s_ssid);
     nvs_set_str(h, "pass", s_pass);
+    nvs_set_str(h, "key", s_key);
     nvs_commit(h);
     nvs_close(h);
 }
@@ -294,6 +338,8 @@ void wifi_link_init(void)
         nvs_get_str(h, "ssid", s_ssid, &n);
         n = sizeof(s_pass);
         nvs_get_str(h, "pass", s_pass, &n);
+        n = sizeof(s_key);
+        nvs_get_str(h, "key", s_key, &n);
         nvs_get_u8(h, "on", &on);
         nvs_close(h);
     }
@@ -311,6 +357,7 @@ bool wifi_link_command(const char *line)
     if (!s_control) return false;
     if (!strncmp(line, "WS,", 3) && strlen(line + 3) < sizeof(s_ssid)) strcpy(s_ssid, line + 3);
     else if (!strncmp(line, "WP,", 3) && strlen(line + 3) < sizeof(s_pass)) strcpy(s_pass, line + 3);
+    else if (!strncmp(line, "WK,", 3) && strlen(line + 3) >= 16 && strlen(line + 3) < sizeof(s_key)) strcpy(s_key, line + 3);
     else if ((!strcmp(line, "W,1") && s_ssid[0]) || !strcmp(line, "W,0")) want = line[2] == '1' ? 2 : 1;
     else return false;
     xTaskNotify(s_control, want, eSetValueWithOverwrite);

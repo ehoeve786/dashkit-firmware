@@ -18,7 +18,8 @@
 void wifi_link_init(void);
 
 // A command from the BLE transmit characteristic: "W,1" on, "W,0" off, "WS,<ssid>", "WP,<password>" (applied on the
-// next "W,1"). False if it isn't one.
+// next "W,1"), "WK,<key>": 16 to 64 characters an "O" line must carry to install firmware over Wi-Fi ("O,<size>,<key>"
+// then the image; answered "O,ok" and a restart, or "O,error <why>"). False if it isn't one.
 bool wifi_link_command(const char *line);
 
 // "W,<on>,<ip or 0.0.0.0>,<why not on: last disconnect reason, -1 start failed, 0 none>,<free heap KB>,

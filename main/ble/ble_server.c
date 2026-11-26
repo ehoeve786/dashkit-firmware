@@ -250,14 +250,14 @@ static conn_slot_t *slot_alloc(void)
 static volatile bool s_slow;
 
 /**
- * While slow: 30-45 ms for a connection that gets the CAN stream (its display stays smooth), 90-110 ms for the
- * others (writes wait up to that); else 15-30 ms. Within Apple's limits; the phone may still refuse.
+ * While slow: 90-110 ms for a connection that doesn't get the CAN stream (writes wait up to that); else, and for
+ * one that does (its display lagged at 30-45 ms), 15-30 ms. Within Apple's limits; the phone may still refuse.
  */
 static void request_interval(uint16_t handle)
 {
     const conn_slot_t *slot = slot_by_handle(handle);
-    bool live = slot && slot->subscribed;
-    struct ble_gap_upd_params p = { .itvl_min = !s_slow ? 12 : live ? 24 : 72, .itvl_max = !s_slow ? 24 : live ? 36 : 88, .supervision_timeout = 400 };
+    bool slow = s_slow && !(slot && slot->subscribed);
+    struct ble_gap_upd_params p = { .itvl_min = slow ? 72 : 12, .itvl_max = slow ? 88 : 24, .supervision_timeout = 400 };
     ble_gap_update_params(handle, &p);
 }
 

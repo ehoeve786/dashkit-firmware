@@ -1,5 +1,6 @@
 #include "wifi_link.h"
 #include "can_manager.h"
+#include "ble_server.h"
 #include "esp_event.h"
 #include "esp_heap_caps.h"
 #include "esp_log.h"
@@ -152,6 +153,7 @@ static void serve(int sock)
                 if (sscanf(in, "U,%d", &port) == 1 && port > 0 && port < 65536 && udp < 0 && !getpeername(sock, (struct sockaddr *)&to, &to_size)) {
                     to.sin_port = htons(port);
                     udp = socket(AF_INET, SOCK_DGRAM, IPPROTO_IP);
+                    ble_server_slow(true);   // Bluetooth's airtime goes to the frames until the stream ends
                 } else can_manager_wifi_line(in);
             }
         }
@@ -198,7 +200,7 @@ static void serve(int sock)
     }
 done:
     s_client = false;
-    if (udp >= 0) close(udp);
+    if (udp >= 0) { close(udp); ble_server_slow(false); }
     vTaskDelay(pdMS_TO_TICKS(20));  // a batch the lanes task was queuing as the client went
     drop_frames();
 }

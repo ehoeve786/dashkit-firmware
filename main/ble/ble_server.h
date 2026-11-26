@@ -11,6 +11,9 @@ esp_err_t ble_server_init(void);
 // Start advertising
 esp_err_t ble_server_start(void);
 
+// While the Wi-Fi stream runs (it shares the radio): ask every connection to talk every ~100 ms, not every few ms.
+void ble_server_slow(bool slow);
+
 // A device that gets the CAN stream.
 typedef struct {
     uint16_t conn;     // connection handle

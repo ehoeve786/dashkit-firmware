@@ -247,6 +247,22 @@ static conn_slot_t *slot_alloc(void)
     return NULL;
 }
 
+static volatile bool s_slow;
+
+/** Connection events every 90-110 ms while slow (writes wait up to that), else 15-30 ms; the phone may refuse. */
+static void request_interval(uint16_t handle)
+{
+    struct ble_gap_upd_params p = { .itvl_min = s_slow ? 72 : 12, .itvl_max = s_slow ? 88 : 24, .supervision_timeout = 400 };
+    ble_gap_update_params(handle, &p);
+}
+
+void ble_server_slow(bool slow)
+{
+    s_slow = slow;
+    for (int i = 0; i < MAX_CONNS; i++)
+        if (s_conns[i].handle != BLE_HS_CONN_HANDLE_NONE) request_interval(s_conns[i].handle);
+}
+
 static void slot_open(conn_slot_t *slot, uint16_t handle)
 {
     struct ble_gap_conn_desc desc;
@@ -264,6 +280,7 @@ static void slot_open(conn_slot_t *slot, uint16_t handle)
     slot->claimed = false;
     slot->compact = false;
     can_filter_open((uint8_t)(slot - s_conns));
+    if (s_slow) request_interval(handle);
 }
 
 // The slot's device is gone: free it and drop its CAN filter.
@@ -456,6 +473,13 @@ static int gap_event_handler(struct ble_gap_event *event, void *arg)
     case BLE_GAP_EVENT_MTU:
         ESP_LOGI(TAG, "MTU updated: %d", event->mtu.value);
         break;
+
+    case BLE_GAP_EVENT_CONN_UPDATE: {
+        struct ble_gap_conn_desc desc;
+        if (ble_gap_conn_find(event->conn_update.conn_handle, &desc) == 0)
+            ESP_LOGI(TAG, "Interval %d ms (handle=%d, status=%d)", desc.conn_itvl * 5 / 4, event->conn_update.conn_handle, event->conn_update.status);
+        break;
+    }
 
     case BLE_GAP_EVENT_SUBSCRIBE:
         if (event->subscribe.attr_handle == s_chr_val_handle) {

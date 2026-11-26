@@ -5,9 +5,12 @@
 #include "automation_manager.h"
 #include "vehicle_control.h"
 #include "dbc.h"
+#include "mcp251xfd.h"
+#include "wifi_link.h"
 #include "driver/usb_serial_jtag.h"
 #include "esp_log.h"
 #include "esp_timer.h"
+#include "freertos/idf_additions.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/queue.h"
 #include "freertos/task.h"
@@ -79,9 +82,12 @@ static volatile uint32_t s_c3x_qdrop, s_c3x_wdrop;
 static volatile bool    s_host_all;    // the CanPilot app asked for every frame
 static volatile bool    s_host_up;     // it is there: streaming or armed to transmit
 static volatile bool    s_host_usb;    // it is on the USB port: the "H" and "D" lines go there
+static volatile bool    s_host_wifi;   // it is on the Wi-Fi link: everything the USB port's app gets goes there too
+static volatile uint32_t s_wifi_drop;  // lines the Wi-Fi link had no room for
+static volatile uint32_t s_bus_frames[2], s_bus_bits[2];  // for the metrics: frames and their bits on the wire
 static volatile bool    s_host_armed;
 typedef struct { char text[32]; } host_line_t;
-static QueueHandle_t    s_host_line_q; // transmit lines from BLE, for the lanes task
+static QueueHandle_t    s_host_line_q; // transmit lines from BLE and "L" lines from Wi-Fi, for the lanes task
 static volatile uint8_t s_bus_err[2][3];   // TEC, REC, flags of the last CAN_DIAG_ID_BUS_ERR record
 static volatile bool    s_bus_err_seen[2];
 
@@ -125,7 +131,7 @@ static void lanes_task(void *arg)
     c3x_frame_t f;
     char b[48], in[48];
     int il = 0;
-    int64_t last_c = 0, last_s = 0, last_a = 0, last_l = 0, last_h = 0, last_u = 0;
+    int64_t last_c = 0, last_s = 0, last_a = 0, last_l = 0, last_h = 0, last_u = 0, last_w = 0;
     host_line_t ble_line;
     bool diag_before = false;
     for (;;) {
@@ -157,12 +163,17 @@ static void lanes_task(void *arg)
             // The app is there: it also gets the diagnostic records, as "D" lines.
             s_host_armed = host_tx_armed((uint32_t)(now / 1000));
             s_host_usb = last_u && now - last_u < 2000000;
+            s_host_wifi = last_w && now - last_w < 2000000;
             bool up = s_host_all || s_host_armed;
             if (up && !s_host_up) { diag_before = can_diag_enabled(); can_diag_set_enabled(true); }
             if (!up && s_host_up) can_diag_set_enabled(diag_before);
             s_host_up = up;
         }
-        while (xQueueReceive(s_host_line_q, &ble_line, 0) == pdTRUE) host_tx_line(ble_line.text, (uint32_t)(now / 1000));
+        while (xQueueReceive(s_host_line_q, &ble_line, 0) == pdTRUE) {
+            if (!strcmp(ble_line.text, "L,1")) last_w = last_l = now;
+            else if (!strcmp(ble_line.text, "L,0")) last_l = last_w = 0;
+            else host_tx_line(ble_line.text, (uint32_t)(now / 1000));
+        }
         // Frames the app asked to have transmitted, each at a moment that is safe for it.
         uint8_t tx_bus;
         can_frame_t tx_frame;
@@ -172,7 +183,7 @@ static void lanes_task(void *arg)
             last_s = now;
             n = snprintf(out, sizeof(out), "S,%lu,%lu\n", (unsigned long)s_c3x_qdrop, (unsigned long)s_c3x_wdrop);
         }
-        if (s_host_usb && now - last_h >= 1000000) {
+        if ((s_host_usb || s_host_wifi) && now - last_h >= 1000000) {
             last_h = now;
             const host_tx_stats_t *tx = host_tx_stats();
             n += snprintf(out + n, sizeof(out) - n, "H,%d,%lu,%lu,%lu,%lu,%lu\n", host_tx_armed((uint32_t)(now / 1000)), (unsigned long)tx->sent,
@@ -183,7 +194,9 @@ static void lanes_task(void *arg)
             do { n += a_line(out + n, &f); lines++; }
             while (n < (int)sizeof(out) - 32 && xQueueReceive(s_c3x_q, &f, 0) == pdTRUE);
         }
-        if (n && usb_serial_jtag_write_bytes(out, n, 0) != n) s_c3x_wdrop += lines;
+        // USB as before, unless only the Wi-Fi app wants the lines (nobody would read them there)
+        if (n && (s_c3x_up || s_host_usb || !s_host_wifi) && usb_serial_jtag_write_bytes(out, n, 0) != n) s_c3x_wdrop += lines;
+        if (n && s_host_wifi && !wifi_link_send(out, n)) s_wifi_drop += lines;
     }
 }
 
@@ -213,6 +226,10 @@ static void on_frame_received(const can_tagged_frame_t *frame, void *user_ctx)
     (void)user_ctx;
     if (!s_rx_queue) return;
     s_seen++;
+    if (frame->bus_id < 2) {
+        s_bus_frames[frame->bus_id]++;
+        s_bus_bits[frame->bus_id] += (frame->frame.extended ? 67 : 47) + 8 * frame->frame.dlc;
+    }
     // The controllers deliver every frame on the bus. The firmware's own work is only for the ids in
     // dbc/used_messages.txt, the same frames the hardware filters let through before; the rest of the bus
     // skips straight to the app's filter, so it costs two bit lookups per frame.
@@ -328,7 +345,7 @@ esp_err_t can_manager_inject_unfiltered(const can_tagged_frame_t *frame)
         for (int i = 0; i < 3; i++) s_bus_err[bus][i] = frame->frame.data[i];
         s_bus_err_seen[bus] = true;
     }
-    if (s_host_usb && (frame->bus_id & CAN_DIAG_BUS_FLAG)) c3x_queue(frame);   // diagnostic records, to the CanPilot app on USB too
+    if ((s_host_usb || s_host_wifi) && (frame->bus_id & CAN_DIAG_BUS_FLAG)) c3x_queue(frame);   // diagnostic records, to the app on USB or Wi-Fi too
     can_tagged_frame_t stamped = *frame;
     stamped.timestamp_us = (uint32_t)esp_timer_get_time();
     return xQueueSend(s_rx_queue, &stamped, 0) == pdTRUE ? ESP_OK : ESP_ERR_NO_MEM;
@@ -366,5 +383,36 @@ int can_manager_host_status(char *out, size_t size)
         n += snprintf(out + n, size - n, "\nD,%d,%08lx,%02x%02x%02x", bus, (unsigned long)CAN_DIAG_ID_BUS_ERR,
                       s_bus_err[bus][0], s_bus_err[bus][1], s_bus_err[bus][2]);
     }
+    return n < 0 ? 0 : (size_t)n < size ? n : (int)size - 1;
+}
+
+bool can_manager_wifi_line(const char *line)
+{
+    host_line_t l;
+    if (!s_host_line_q || (strcmp(line, "L,1") && strcmp(line, "L,0"))) return false;
+    strcpy(l.text, line);
+    return xQueueSend(s_host_line_q, &l, 0) == pdTRUE;
+}
+
+int can_manager_metrics(char *out, size_t size)
+{
+    static int64_t was_us;
+    static uint32_t was_idle[2], was_frames[2], was_bits[2];
+    int64_t now = esp_timer_get_time();
+    uint64_t us = now - was_us;
+    was_us = now;
+    if (!us) us = 1;
+    unsigned busy[2], load[2], fps[2];
+    for (int i = 0; i < 2; i++) {
+        uint32_t idle = ulTaskGetIdleRunTimeCounterForCore(i), frames = s_bus_frames[i], bits = s_bus_bits[i];
+        uint64_t idle_us = idle - was_idle[i];  // the run-time counter counts microseconds
+        busy[i] = idle_us >= us ? 0 : 100 - (unsigned)(idle_us * 100 / us);
+        load[i] = (unsigned)((uint64_t)(bits - was_bits[i]) * 100 * 1000000 / (500000 * us));
+        fps[i] = (unsigned)((uint64_t)(frames - was_frames[i]) * 1000000 / us);
+        was_idle[i] = idle; was_frames[i] = frames; was_bits[i] = bits;
+    }
+    int n = snprintf(out, size, "M,%u,%u,%u,%u,%u,%u,%lu,%lu,%lu,%lu,%lu", busy[0], busy[1], load[0], load[1], fps[0], fps[1],
+                     (unsigned long)mcp251xfd_rx_overflows(0), (unsigned long)mcp251xfd_rx_overflows(1),
+                     (unsigned long)s_c3x_qdrop, (unsigned long)s_c3x_wdrop, (unsigned long)s_wifi_drop);
     return n < 0 ? 0 : (size_t)n < size ? n : (int)size - 1;
 }

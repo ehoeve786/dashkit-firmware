@@ -68,5 +68,9 @@ CONFIG_BT_NIMBLE_LOG_LEVEL_WARNING=y
 # Flash size
 CONFIG_ESPTOOLPY_FLASHSIZE_16MB=y
 
+# Per-core CPU use for the Wi-Fi link's metrics (idle-task run time); plain log lines for its log
+CONFIG_FREERTOS_GENERATE_RUN_TIME_STATS=y
+CONFIG_LOG_COLORS=n
+
 # USB-Serial-JTAG is a data link to the comma 3X (driver in can_manager.c), not a log console
 CONFIG_ESP_CONSOLE_SECONDARY_NONE=y

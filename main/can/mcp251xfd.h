@@ -25,4 +25,7 @@ can_interface_t *mcp251xfd_create(const mcp251xfd_config_t *config);
 // Test builds: emit the receive statistics of every started bus now.
 void mcp251xfd_report_now(void);
 
+// RX FIFO overflow events on that bus since boot (each lost at least one frame); 0 for a bus not started.
+uint32_t mcp251xfd_rx_overflows(uint8_t bus);
+
 void mcp251xfd_destroy(can_interface_t *iface);

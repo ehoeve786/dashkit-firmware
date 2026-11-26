@@ -44,6 +44,7 @@ idf_component_register(
         "ble/ble_ota.c"
         "ble/ble_appchan.c"
         "ble/ble_stream.c"
+        "wifi/wifi_link.c"
         ${TESLA_SRCS}
         ${BTHOME_SRCS}
     INCLUDE_DIRS
@@ -55,6 +56,7 @@ idf_component_register(
         "ble"
         "bthome"
         "tesla"
+        "wifi"
     REQUIRES
         driver
         esp_adc
@@ -62,6 +64,10 @@ idf_component_register(
         bt
         esp_timer
         app_update
+        esp_wifi
+        esp_netif
+        esp_event
+        lwip
         # Tesla vehicle-command protocol component (committed nanopb bindings +
         # crypto/session/protobuf-build). mbedtls is an explicit dependency of
         # the main component because the Tesla client drives the crypto layer.

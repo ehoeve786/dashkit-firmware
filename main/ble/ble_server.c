@@ -5,6 +5,7 @@
 #include "can_filter.h"
 #include "can_diag.h"
 #include "can_manager.h"
+#include "wifi_link.h"
 #include "can_interface.h"
 #include "ble_stream.h"
 #include "vehicle_control.h"
@@ -730,19 +731,21 @@ static int gatt_tx_access(uint16_t conn_handle, uint16_t attr_handle,
 
     char text[96];
     if (ctxt->op == BLE_GATT_ACCESS_OP_READ_CHR) {
-        int len = can_manager_host_status(text, sizeof(text));
+        int len = can_manager_host_status(text, sizeof(text) - 24);
+        text[len++] = '\n';
+        len += wifi_link_status(text + len, sizeof(text) - len);
         return os_mbuf_append(ctxt->om, text, len) == 0 ? 0 : BLE_ATT_ERR_INSUFFICIENT_RES;
     }
     if (ctxt->op != BLE_GATT_ACCESS_OP_WRITE_CHR) {
         return BLE_ATT_ERR_UNLIKELY;
     }
     uint16_t len = 0;
-    if (OS_MBUF_PKTLEN(ctxt->om) >= 32 || ble_hs_mbuf_to_flat(ctxt->om, text, 31, &len) != 0) {
+    if (OS_MBUF_PKTLEN(ctxt->om) >= sizeof(text) || ble_hs_mbuf_to_flat(ctxt->om, text, sizeof(text) - 1, &len) != 0) {
         return BLE_ATT_ERR_INVALID_ATTR_VALUE_LEN;
     }
     while (len && (text[len - 1] == '\n' || text[len - 1] == '\r')) len--;
     text[len] = 0;
-    return can_manager_host_line(text) ? 0 : BLE_ATT_ERR_UNLIKELY;
+    return can_manager_host_line(text) || wifi_link_command(text) ? 0 : BLE_ATT_ERR_UNLIKELY;
 }
 
 static const struct ble_gatt_svc_def s_tx_svc_def[] = {

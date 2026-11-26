@@ -449,6 +449,14 @@ static void overflow_report_cb(void *arg)
 // that would lose the since-boot counters).
 static mcp251xfd_ctx_t *s_reporting[2];
 
+uint32_t mcp251xfd_rx_overflows(uint8_t bus)
+{
+    mcp251xfd_ctx_t *ctx = bus < sizeof(s_reporting) / sizeof(s_reporting[0]) ? s_reporting[bus] : NULL;
+    uint32_t total = 0;
+    for (int i = 0; ctx && i < MCPFD_LANES; i++) total += ctx->stream.stats.rx_overflow[i];
+    return total;
+}
+
 void mcp251xfd_report_now(void)
 {
     for (size_t i = 0; i < sizeof(s_reporting) / sizeof(s_reporting[0]); i++) {

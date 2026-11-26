@@ -599,8 +599,9 @@ static void start_advertising(void)
     struct ble_gap_adv_params adv_params = {
         .conn_mode = BLE_GAP_CONN_MODE_UND,
         .disc_mode = BLE_GAP_DISC_MODE_GEN,
-        .itvl_min = 0x20,   // 20ms
-        .itvl_max = 0x40,   // 40ms
+        // 160-250 ms: the radio is shared with Wi-Fi, which lost datagrams to 20-40 ms advertising; still found in ~1 s
+        .itvl_min = 0x100,
+        .itvl_max = 0x190,
     };
 
     struct ble_hs_adv_fields fields = {0};

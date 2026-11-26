@@ -23,7 +23,7 @@
 static const char *TAG = "wifi_link";
 
 #define RING_BYTES  (8 * 1024)
-#define HEAP_KEPT   (24 * 1024)  // free heap a datagram may not take: BLE allocates as it goes
+#define HEAP_KEPT   (12 * 1024)  // free heap a datagram may not take: BLE allocates as it goes (it failed near 0, not at 15 KB)
 #define HEAP_NEEDED (48 * 1024)  // free heap Wi-Fi start-up needs (~45 KB with the buffers in sdkconfig.defaults)
 #define LOG_MAX     300   // longer log lines are cut
 

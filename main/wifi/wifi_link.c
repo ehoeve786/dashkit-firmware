@@ -33,6 +33,8 @@ static char             s_ssid[33], s_pass[65];
 static volatile int     s_seen = -1, s_rssi, s_channel, s_auth;  // the last scan: networks seen; ours, if among them
 static volatile int     s_reason;    // why it isn't on the network: the last disconnect reason (wifi_err_reason_t), -1 start failed, 0 none
 
+static volatile bool    s_open_line;  // the last log piece didn't end its line: the next one continues it
+
 static int log_hook(const char *fmt, va_list args)
 {
     va_list copy;
@@ -50,11 +52,13 @@ static int log_hook(const char *fmt, va_list args)
         }
         if (item) {
             char *p = item;
-            p[0] = 'G'; p[1] = ',';
+            // the Wi-Fi driver writes a line in pieces: "g" continues the line before, "G" starts one
+            p[0] = s_open_line ? 'g' : 'G'; p[1] = ',';
             va_copy(copy, args);
             vsnprintf(p + 2, len + 1, fmt, copy);
             va_end(copy);
-            if (p[len + 1] == '\n') p[len + 1] = ' ';  // the line's own newline: one line per call
+            s_open_line = p[len + 1] != '\n';
+            if (!s_open_line) p[len + 1] = ' ';  // the line's own newline: one line per item
             p[len + 2] = '\n';
             xRingbufferSendComplete(s_ring, item);
         }
@@ -94,11 +98,19 @@ static void drop_frames(void)
     }
 }
 
-// One client at a time: its "L" lines in, the ring and the metrics out, until it goes or Wi-Fi is switched off.
+/**
+ * One client at a time: its "L" lines in; the log and the metrics out on TCP, and once it sent "U,<port>" the frame
+ * batches as UDP datagrams to that port, each "Q,<sequence>\n" and the batch. TCP waits for acknowledgements, which
+ * modem sleep (kept for BLE) delays by hundreds of ms: too slow for both buses. A lost datagram shows as a gap.
+ */
 static void serve(int sock)
 {
+    static char datagram[1200];
     char b[64], in[16], line[192];
-    int il = 0;
+    int il = 0, udp = -1;
+    uint32_t sequence = 0;
+    struct sockaddr_in to = { 0 };
+    socklen_t to_size = sizeof(to);
     int64_t last_m = 0;
     bool asked = false;  // nothing goes out before the client's first line: a connection that only looks takes no log
     while (s_on) {
@@ -111,8 +123,14 @@ static void serve(int sock)
             int r = recv(sock, b, sizeof(b), 0);
             if (r <= 0) break;
             for (int i = 0; i < r; i++) {
-                if (b[i] == '\n') { in[il] = 0; if (il && in[il - 1] == '\r') in[il - 1] = 0; can_manager_wifi_line(in); il = 0; s_client = asked = true; }
-                else if (il < (int)sizeof(in) - 1) in[il++] = b[i];
+                if (b[i] != '\n') { if (il < (int)sizeof(in) - 1) in[il++] = b[i]; continue; }
+                in[il] = 0; if (il && in[il - 1] == '\r') in[il - 1] = 0;
+                il = 0; s_client = asked = true;
+                int port = 0;
+                if (sscanf(in, "U,%d", &port) == 1 && port > 0 && port < 65536 && udp < 0 && !getpeername(sock, (struct sockaddr *)&to, &to_size)) {
+                    to.sin_port = htons(port);
+                    udp = socket(AF_INET, SOCK_DGRAM, IPPROTO_IP);
+                } else can_manager_wifi_line(in);
             }
         }
         size_t size;
@@ -120,7 +138,13 @@ static void serve(int sock)
         bool ok = true;
         if (!asked) continue;
         while (ok && (item = xRingbufferReceive(s_ring, &size, 0))) {
-            ok = send_all(sock, item, size);
+            if (udp >= 0 && item[0] != 'G' && item[0] != 'g') {
+                int head = snprintf(datagram, sizeof(datagram), "Q,%lu\n", (unsigned long)sequence++);
+                if (head + size <= sizeof(datagram)) {
+                    memcpy(datagram + head, item, size);
+                    sendto(udp, datagram, head + size, 0, (struct sockaddr *)&to, sizeof(to));   // not sent: a gap the app counts
+                }
+            } else ok = send_all(sock, item, size);
             vRingbufferReturnItem(s_ring, item);
         }
         int64_t now = esp_timer_get_time();
@@ -135,6 +159,7 @@ static void serve(int sock)
         if (!ok) break;
     }
     s_client = false;
+    if (udp >= 0) close(udp);
     vTaskDelay(pdMS_TO_TICKS(20));  // a batch the lanes task was queuing as the client went
     drop_frames();
 }

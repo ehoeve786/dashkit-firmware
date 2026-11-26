@@ -280,7 +280,8 @@ static void lanes_task(void *arg)
         }
         if (n && usb && usb_serial_jtag_write_bytes(out, n, 0) != n) s_c3x_wdrop += lines;
         if (n && !usb && !wifi_link_send(out, n)) s_wifi_drop += lines;
-        packed_flush();
+        // full datagrams, not one per pass: small ones used up Wi-Fi's transmit buffers (~225/s for ~70 KB/s)
+        if ((int32_t)((uint32_t)now - s_packed_start) > 20000) packed_flush();
     }
 }
 

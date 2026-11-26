@@ -14,6 +14,7 @@
 #include "nvs.h"
 #include <stdarg.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
 
@@ -29,6 +30,7 @@ static TaskHandle_t     s_control;   // applies on/off: Wi-Fi start-up is too he
 static volatile bool    s_on, s_client;
 static esp_netif_t     *s_netif;
 static char             s_ssid[33], s_pass[65];
+static volatile int     s_seen = -1, s_rssi, s_channel, s_auth;  // the last scan: networks seen; ours, if among them
 static volatile int     s_reason;    // why it isn't on the network: the last disconnect reason (wifi_err_reason_t), -1 start failed, 0 none
 
 static int log_hook(const char *fmt, va_list args)
@@ -167,7 +169,21 @@ static void on_event(void *arg, esp_event_base_t base, int32_t id, void *data)
         if (id == WIFI_EVENT_STA_DISCONNECTED) {
             s_reason = ((wifi_event_sta_disconnected_t *)data)->reason;
             vTaskDelay(pdMS_TO_TICKS(2000));  // the hotspot is off: don't spin
+            // not found: look at what is there (the result says why), then try again from the scan's end
+            if (s_reason == WIFI_REASON_NO_AP_FOUND && esp_wifi_scan_start(NULL, false) == ESP_OK) return;
         }
+        esp_wifi_connect();
+    } else if (base == WIFI_EVENT && id == WIFI_EVENT_SCAN_DONE && s_on) {
+        uint16_t count = 20;
+        wifi_ap_record_t *found = calloc(count, sizeof(wifi_ap_record_t));
+        uint16_t total = 0;
+        esp_wifi_scan_get_ap_num(&total);
+        s_seen = total; s_rssi = 0; s_channel = 0; s_auth = -1;
+        if (found && esp_wifi_scan_get_ap_records(&count, found) == ESP_OK) {
+            for (int i = 0; i < count; i++) if (!strcmp((char *)found[i].ssid, s_ssid)) { s_rssi = found[i].rssi; s_channel = found[i].primary; s_auth = found[i].authmode; break; }
+        } else esp_wifi_clear_ap_list();
+        free(found);
+        ESP_LOGI(TAG, "scan: %d networks, %s %s (ch %d, %d dBm, auth %d)", s_seen, s_ssid, s_auth >= 0 ? "seen" : "not seen", s_channel, s_rssi, s_auth);
         esp_wifi_connect();
     } else if (base == IP_EVENT && id == IP_EVENT_STA_GOT_IP) {
         s_reason = 0;
@@ -275,6 +291,7 @@ int wifi_link_status(char *out, size_t size)
 {
     esp_netif_ip_info_t ip = { 0 };
     if (s_netif && s_on) esp_netif_get_ip_info(s_netif, &ip);
-    int n = snprintf(out, size, "W,%d," IPSTR ",%d,%u", s_on, IP2STR(&ip.ip), s_reason, (unsigned)(esp_get_free_heap_size() / 1024));
+    int n = snprintf(out, size, "W,%d," IPSTR ",%d,%u,%d,%d,%d,%d", s_on, IP2STR(&ip.ip), s_reason, (unsigned)(esp_get_free_heap_size() / 1024),
+                     s_seen, s_auth, s_channel, s_rssi);
     return n < 0 ? 0 : (size_t)n < size ? n : (int)size - 1;
 }

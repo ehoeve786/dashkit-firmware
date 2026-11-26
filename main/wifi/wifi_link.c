@@ -168,14 +168,14 @@ static void serve(int sock)
             if (item[0] == 'B') {
                 // packed frames: 'C' (compact; 'B' was the firmware before it), the sequence number (u32 LE), then the
                 // item after its tag. Not below HEAP_KEPT free (BLE needs that memory more) nor without a Wi-Fi
-                // transmit buffer: up to 50 ms for both (the ring holds ~150 ms of frames), else a gap the app counts
+                // transmit buffer: up to 100 ms for both (the ring holds ~160 ms of compact frames), else a gap the app counts
                 uint32_t number = sequence++;
                 bool sent = false, low = false;
                 if (udp >= 0 && size + 4 <= sizeof(datagram)) {
                     datagram[0] = 'C';
                     memcpy(datagram + 1, &number, 4);
                     memcpy(datagram + 5, item + 1, size - 1);
-                    for (int tries = 0; tries < 50; tries++, vTaskDelay(1)) {
+                    for (int tries = 0; tries < 100; tries++, vTaskDelay(1)) {
                         if ((low = esp_get_free_heap_size() < HEAP_KEPT)) continue;
                         if ((sent = sendto(udp, datagram, size + 4, 0, (struct sockaddr *)&to, sizeof(to)) >= 0) || (errno != ENOMEM && errno != ENOBUFS)) break;
                     }

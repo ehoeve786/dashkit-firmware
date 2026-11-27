@@ -351,6 +351,8 @@ const dbc_signal_t g_dbc_signals[DBC_SIGNAL_COUNT] = {
     { "VCRIGHT_turnSignalStatus", 4, 2, 0, 1.0, 0.0, -1, -1 },
     { "VCRIGHT_reverseLightStatus", 6, 2, 0, 1.0, 0.0, -1, -1 },
     { "VCRIGHT_rearFogLightStatus", 8, 2, 0, 1.0, 0.0, -1, -1 },
+    // ---- VCFRONT_lightingJuniper (0x3F5) ----
+    { "VCFRONT_highBeamControlState", 28, 2, 0, 1.0, 0.0, -1, -1 },
 };
 
 const dbc_message_t g_dbc_messages[DBC_MESSAGE_COUNT] = {
@@ -374,17 +376,18 @@ const dbc_message_t g_dbc_messages[DBC_MESSAGE_COUNT] = {
     { "DAS_control", 0x2B9, 8, 0, 293, 9, DBC_CKSUM_TESLA_BYTESUM, 301, 300 },
     { "VCLEFT_lightStatus", 0x3E2, 7, 1, 302, 22, DBC_CKSUM_NONE, -1, -1 },
     { "VCRIGHT_lightStatus", 0x3E3, 2, 1, 324, 5, DBC_CKSUM_NONE, -1, -1 },
+    { "VCFRONT_lightingJuniper", 0x3F5, 8, 1, 329, 1, DBC_CKSUM_NONE, -1, -1 },
 };
 
 static const uint16_t hw_filter_bus0_ids[] = {
     0x129, 0x118, 0x257, 0x399, 0x389, 0x25D, 0x2B9,
 };
 static const uint16_t hw_filter_bus1_ids[] = {
-    0x249, 0x3C2, 0x3E9, 0x3DF, 0x273, 0x3B3, 0x333, 0x347, 0x2F3, 0x334, 0x253, 0x1F9, 0x288, 0x228, 0x3E2, 0x3E3, 0x2E1, 0x352, 0x252, 0x132, 0x332, 0x3B6, 0x405, 0x219, 0x102, 0x103, 0x142, 0x679,
+    0x249, 0x3C2, 0x3E9, 0x3DF, 0x273, 0x3B3, 0x333, 0x347, 0x2F3, 0x334, 0x253, 0x1F9, 0x288, 0x228, 0x3E2, 0x3E3, 0x2E1, 0x352, 0x252, 0x132, 0x332, 0x3B6, 0x405, 0x219, 0x102, 0x103, 0x142, 0x679, 0x3F5,
 };
 const dbc_hw_filter_set_t g_dbc_hw_filters[DBC_HW_FILTER_BUS_COUNT] = {
     { hw_filter_bus0_ids, 7 },
-    { hw_filter_bus1_ids, 28 },
+    { hw_filter_bus1_ids, 29 },
 };
 
 static const uint16_t app_filter_bus0_ids[] = {

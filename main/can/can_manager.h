@@ -32,6 +32,9 @@ esp_err_t can_manager_inject_unfiltered(const can_tagged_frame_t *frame);
 // Returns ESP_ERR_NOT_FOUND if no interface matches bus_id.
 esp_err_t can_manager_send(uint8_t bus_id, const can_frame_t *frame);
 
+// Something reads the USB port (the comma 3X or the app): it gets the firmware log and the metrics too.
+bool can_manager_usb_listener(void);
+
 // A transmit line ("X,1", "X,0", "T,<bus>,<id>,<hex>", see host_tx.h) that came in over something other than the
 // USB port (the BLE transmit characteristic). It is handed to the task that owns host_tx, within 10 ms. False if it
 // is not such a line or too many are waiting. Safe from any task.

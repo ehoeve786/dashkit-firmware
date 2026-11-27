@@ -14,6 +14,8 @@
 #include "esp_wifi.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/ringbuf.h"
+#include "freertos/semphr.h"
+#include "driver/usb_serial_jtag.h"
 #include "freertos/task.h"
 #include "lwip/sockets.h"
 #include "nvs.h"
@@ -41,6 +43,8 @@ static volatile int     s_seen = -1, s_rssi, s_channel, s_auth;  // the last sca
 static volatile int     s_reason;    // why it isn't on the network: the last disconnect reason (wifi_err_reason_t), -1 start failed, 0 none
 
 static volatile bool    s_open_line;  // the last log piece didn't end its line: the next one continues it
+static bool             s_usb_open;   // the same for the copy on USB
+static SemaphoreHandle_t s_usb_log;   // its line buffer: one task at a time, a busy one skips (also a log from within)
 
 static int log_hook(const char *fmt, va_list args)
 {
@@ -69,6 +73,22 @@ static int log_hook(const char *fmt, va_list args)
             p[len + 2] = '\n';
             xRingbufferSendComplete(s_ring, item);
         }
+    }
+    // a copy for whoever reads the USB port (comma 3X, app), as whole lines: the frame lines come between them
+    if (can_manager_usb_listener() && xSemaphoreTake(s_usb_log, 0) == pdTRUE) {
+        static char line[LOG_MAX + 3];
+        va_copy(copy, args);
+        int n = vsnprintf(line + 2, LOG_MAX + 1, fmt, copy);
+        va_end(copy);
+        if (n > 0) {
+            if (n > LOG_MAX) n = LOG_MAX;
+            line[0] = s_usb_open ? 'g' : 'G'; line[1] = ',';
+            s_usb_open = line[n + 1] != '\n';
+            if (!s_usb_open) line[n + 1] = ' ';
+            line[n + 2] = '\n';
+            usb_serial_jtag_write_bytes(line, n + 3, 0);
+        }
+        xSemaphoreGive(s_usb_log);
     }
     return vprintf(fmt, args);  // the console as before
 }
@@ -289,7 +309,7 @@ static void apply(bool on)
             s_reason = -1;
             return;
         }
-        if (!s_ring && (s_ring = xRingbufferCreate(RING_BYTES, RINGBUF_TYPE_NOSPLIT))) esp_log_set_vprintf(log_hook);
+        if (!s_ring) s_ring = xRingbufferCreate(RING_BYTES, RINGBUF_TYPE_NOSPLIT);
         wifi_init_config_t cfg = WIFI_INIT_CONFIG_DEFAULT();
         esp_err_t err = esp_netif_init();
         if (err == ESP_OK) err = esp_event_loop_create_default();
@@ -334,6 +354,7 @@ static void control_task(void *arg)
 
 void wifi_link_init(void)
 {
+    if ((s_usb_log = xSemaphoreCreateMutex())) esp_log_set_vprintf(log_hook);   // the log, for USB now and Wi-Fi later
     nvs_handle_t h;
     uint8_t on = 0;
     if (nvs_open("wifi_link", NVS_READONLY, &h) == ESP_OK) {

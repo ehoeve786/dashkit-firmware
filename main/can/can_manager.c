@@ -9,6 +9,7 @@
 #include "wifi_link.h"
 #include "firmware_update.h"
 #include "esp_system.h"
+#include "esp_app_desc.h"
 #include "driver/usb_serial_jtag.h"
 #include "esp_log.h"
 #include "esp_timer.h"
@@ -75,7 +76,11 @@ static void route_report_cb(void *arg)
 //       "X,1" once a second and "T,<bus>,<id>,<hex>": transmit a frame on CAN, under the rules in host_tx.h.
 //  out: the "A" lines; "D,<bus>,<id>,<hex>" for the diagnostic records of can_diag.h (bus error counters among
 //       them), which are switched on while the app is there; and once a second
-//       "H,<armed>,<sent>,<refused>,<expired>,<queue drops>,<write drops>".
+//       "H,<armed>,<sent>,<refused>,<expired>,<queue drops>,<write drops>". To the comma 3X and the app: "E,<bus>,<id>,<hex>"
+//       for each frame the DashKit sent (its controllers don't hear their own), and once a second the metrics
+//       ("M", see can_manager_metrics, then ",0,<free heap KB>") and the build ("V,<date> <time>"), with the
+//       firmware log as "G"/"g" lines (wifi_link.c).
+#define SENT_BUS_FLAG 0x20   // c3x_frame_t.bus: a frame the DashKit sent
 #define COMMA_ID 0x7F0
 typedef struct { uint32_t id, time; uint8_t bus, dlc, ext, data[8]; } c3x_frame_t;
 static QueueHandle_t    s_c3x_q = NULL;
@@ -93,6 +98,9 @@ typedef struct { char text[32]; } host_line_t;
 static QueueHandle_t    s_host_line_q; // transmit lines from BLE and "L" lines from Wi-Fi, for the lanes task
 static volatile uint8_t s_bus_err[2][3];   // TEC, REC, flags of the last CAN_DIAG_ID_BUS_ERR record
 static volatile bool    s_bus_err_seen[2];
+static char             s_metrics[160];   // the last "M" line (without the Wi-Fi fields), made each second
+static portMUX_TYPE     s_metrics_mux = portMUX_INITIALIZER_UNLOCKED;
+static int metrics_now(char *out, size_t size);
 
 static bool c3x_line(char *in, int len)
 {
@@ -118,7 +126,7 @@ static int a_line(char *o, const c3x_frame_t *f)
 {
     static const char hx[] = "0123456789abcdef";
     char *p = o;
-    *p++ = f->bus & CAN_DIAG_BUS_FLAG ? 'D' : 'A'; *p++ = ','; *p++ = '0' + (f->bus & 0x0F); *p++ = ',';
+    *p++ = f->bus & CAN_DIAG_BUS_FLAG ? 'D' : f->bus & SENT_BUS_FLAG ? 'E' : 'A'; *p++ = ','; *p++ = '0' + (f->bus & 0x0F); *p++ = ',';
     int nd = f->ext ? 8 : 3;
     for (int i = nd - 1; i >= 0; i--) p[i] = hx[(f->id >> (4 * (nd - 1 - i))) & 15];
     p += nd;
@@ -137,8 +145,9 @@ static int a_line(char *o, const c3x_frame_t *f)
 /*
  * Frames for the Wi-Fi app, packed (wifi_link.h): about 10 bytes a frame instead of 34 as text, so both buses fit
  * through a radio shared with BLE. An item is 'B', the first frame's time (µs since boot, u32 LE), then per frame
- * (all LE): a u16 (bit 15 bus, bits 11-14 the length or 15 for extended, bits 0-10 the id), the µs since the frame
- * before (u8, or 255 and a u16), for an extended frame its length (u8) and id (u32), then the data. An item ends
+ * (all LE): a u16 (bit 15 bus, bits 11-14 the length, 15 for extended or 14 for one the DashKit sent, bits 0-10 the
+ * id), the µs since the frame before (u8, or 255 and a u16), for an extended frame its length (u8), for a sent one
+ * its length with bit 6 for extended (u8), then for either extended kind the id (u32), then the data. An item ends
  * before a frame that wouldn't fit or comes 65 ms or more after the one before (or before it: the buses' tasks race).
  */
 static uint8_t  s_packed[1400];   // with the sequence number still one unsplit UDP datagram (1472)
@@ -154,7 +163,7 @@ static void packed_flush(void)
 static void packed_add(const c3x_frame_t *f)
 {
     uint32_t gap = f->time - s_packed_last;
-    if (s_packed_len && (gap > 0xFFFF || s_packed_len + 6 + (f->ext ? 5 : 0) + f->dlc > (int)sizeof(s_packed))) packed_flush();
+    if (s_packed_len && (gap > 0xFFFF || s_packed_len + 7 + (f->ext ? 4 : 0) + f->dlc > (int)sizeof(s_packed))) packed_flush();
     if (!s_packed_len) {
         s_packed[0] = 'B';
         memcpy(s_packed + 1, &f->time, 4);
@@ -163,11 +172,14 @@ static void packed_add(const c3x_frame_t *f)
         gap = 0;
     }
     uint8_t *p = s_packed + s_packed_len;
-    uint16_t head = (f->bus & 1) << 15 | (f->ext ? 15 : f->dlc) << 11 | (f->ext ? 0 : f->id & 0x7FF);
+    bool sent = f->bus & SENT_BUS_FLAG;
+    uint16_t head = (f->bus & 1) << 15 | (sent ? 14 : f->ext ? 15 : f->dlc) << 11 | (f->ext ? 0 : f->id & 0x7FF);
     *p++ = head; *p++ = head >> 8;
     if (gap < 255) *p++ = gap;
     else { *p++ = 255; *p++ = gap; *p++ = gap >> 8; }
-    if (f->ext) { *p++ = f->dlc; for (int i = 0; i < 4; i++) *p++ = f->id >> (8 * i); }
+    if (sent) *p++ = f->dlc | (f->ext ? 0x40 : 0);
+    else if (f->ext) *p++ = f->dlc;
+    if (f->ext) for (int i = 0; i < 4; i++) *p++ = f->id >> (8 * i);
     memcpy(p, f->data, f->dlc);
     s_packed_len = p + f->dlc - s_packed;
     s_packed_last = f->time;
@@ -211,7 +223,7 @@ static void lanes_task(void *arg)
     c3x_frame_t f;
     char b[48], in[48];
     int il = 0;
-    int64_t last_c = 0, last_s = 0, last_a = 0, last_l = 0, last_h = 0, last_u = 0, last_w = 0;
+    int64_t last_c = 0, last_s = 0, last_a = 0, last_l = 0, last_h = 0, last_u = 0, last_w = 0, last_m = 0;
     host_line_t ble_line;
     bool diag_before = false;
     for (;;) {
@@ -269,6 +281,18 @@ static void lanes_task(void *arg)
             const host_tx_stats_t *tx = host_tx_stats();
             n += snprintf(out + n, sizeof(out) - n, "H,%d,%lu,%lu,%lu,%lu,%lu\n", host_tx_armed((uint32_t)(now / 1000)), (unsigned long)tx->sent,
                           (unsigned long)tx->refused, (unsigned long)tx->expired, (unsigned long)s_c3x_qdrop, (unsigned long)s_c3x_wdrop);
+        }
+        if (now - last_m >= 1000000) {   // the metrics, once a second for whoever asks (USB here, Wi-Fi in wifi_link.c)
+            last_m = now;
+            char m[sizeof(s_metrics)];
+            metrics_now(m, sizeof(m));
+            taskENTER_CRITICAL(&s_metrics_mux);
+            memcpy(s_metrics, m, sizeof(m));
+            taskEXIT_CRITICAL(&s_metrics_mux);
+            if (can_manager_usb_listener()) {
+                const esp_app_desc_t *app = esp_app_get_description();
+                n += snprintf(out + n, sizeof(out) - n, "%s,0,%u\nV,%s %s\n", m, (unsigned)(esp_get_free_heap_size() / 1024), app->date, app->time);
+            }
         }
         // USB as before, unless only the Wi-Fi app wants the lines (nobody would read them there). The Wi-Fi app
         // gets its frames packed, and the status and diagnostic lines as text (when USB has them, it doesn't).
@@ -418,7 +442,13 @@ esp_err_t can_manager_send(uint8_t bus_id, const can_frame_t *frame)
     for (int i = 0; i < s_iface_count; i++) {
         if (s_interfaces[i]->bus_id == bus_id) {
             if (!s_interfaces[i]->send) return ESP_ERR_NOT_SUPPORTED;
-            return s_interfaces[i]->send(s_interfaces[i], frame);
+            esp_err_t err = s_interfaces[i]->send(s_interfaces[i], frame);
+            // what it sent, for the comma 3X and the app: the controllers don't receive their own frames
+            if (err == ESP_OK && bus_id < 2 && (s_c3x_up || s_host_usb || s_host_wifi)) {
+                can_tagged_frame_t sent = { .bus_id = bus_id | SENT_BUS_FLAG, .frame = *frame };
+                c3x_queue(&sent);
+            }
+            return err;
         }
     }
     ESP_LOGW(TAG, "send: no interface for bus_id=%d", bus_id);
@@ -482,7 +512,17 @@ bool can_manager_wifi_line(const char *line)
     return xQueueSend(s_host_line_q, &l, 0) == pdTRUE;
 }
 
+bool can_manager_usb_listener(void) { return s_c3x_up || s_host_usb; }
+
 int can_manager_metrics(char *out, size_t size)
+{
+    taskENTER_CRITICAL(&s_metrics_mux);
+    int n = snprintf(out, size, "%s", s_metrics);
+    taskEXIT_CRITICAL(&s_metrics_mux);
+    return n < 0 ? 0 : (size_t)n < size ? n : (int)size - 1;
+}
+
+static int metrics_now(char *out, size_t size)
 {
     static int64_t was_us;
     static uint32_t was_idle[2], was_frames[2], was_bits[2];
